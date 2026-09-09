@@ -65,11 +65,20 @@ document.querySelectorAll('input[name="modoProducto"]').forEach((radio) => {
 
 // --- Abrir / cerrar ----------------------------------------------------
 
+// Cuenta cuántos modales están abiertos a la vez: con dos modales posibles
+// (artículo + confirmar eliminar pueden solaparse), el scroll del body solo
+// debe volver cuando se cierra el ÚLTIMO, no el primero que se cierre.
+let modalesAbiertos = 0;
+
 function mostrarModal(id) {
   document.getElementById(id).hidden = false;
+  modalesAbiertos += 1;
+  document.body.style.overflow = 'hidden';
 }
 function ocultarModal(id) {
   document.getElementById(id).hidden = true;
+  modalesAbiertos = Math.max(0, modalesAbiertos - 1);
+  if (modalesAbiertos === 0) document.body.style.overflow = '';
 }
 
 function limpiarFormulario() {

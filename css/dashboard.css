@@ -150,15 +150,18 @@ button {
 }
 
 .btn-primario {
-  margin-top: 14px;
   background: var(--accent);
   color: var(--accent-ink);
-  border: none;
+  /* Borde transparente, no "none": así ocupa el mismo espacio que el borde
+     de 1px de .btn-secundario/.btn-peligro y las tres variantes miden
+     exactamente lo mismo en vez de que la que no tiene borde salga más chica. */
+  border: 1px solid transparent;
   border-radius: 7px;
-  padding: 10px 14px;
+  padding: 9px 16px;
   font-weight: 500;
   font-size: 14px;
 }
+.tarjeta-login .btn-primario { margin-top: 14px; }
 .btn-primario:hover { filter: brightness(1.08); }
 .btn-primario:disabled { opacity: .6; cursor: default; }
 
@@ -575,7 +578,7 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 .btn-peligro {
   background: var(--bad);
   color: #fff;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 7px;
   padding: 9px 16px;
   font-size: 14px;
