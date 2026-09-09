@@ -24,6 +24,18 @@ const CatalogoAPI = {
     return data;
   },
 
+  // Para el selector "producto existente" del formulario de la Fase 6: solo
+  // lo mínimo para identificar el modelo, no sus variantes.
+  async listarProductos() {
+    const { data, error } = await supabaseClient
+      .from('products')
+      .select('id, model_code, name')
+      .is('deleted_at', null)
+      .order('name');
+    if (error) throw error;
+    return data;
+  },
+
   // Un artículo = una fila de inventory_items con su producto y su stock
   // embebidos. inventory es un arreglo porque el modelo soporta stock por
   // almacén; con un solo almacén (caso base del README) trae un elemento.

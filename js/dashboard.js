@@ -121,11 +121,21 @@ function filaArticulo(art) {
     <td class="celda-num">${precio}</td>
     <td>${proveedor}</td>
     <td><span class="pill ${clase}">${texto}</span></td>
-    <td class="acciones">
-      <button class="btn-accion" disabled title="Disponible en la Fase 6">Editar</button>
-      <button class="btn-accion" disabled title="Disponible en la Fase 6">Eliminar</button>
-    </td>
+    <td class="acciones"></td>
   `;
+
+  const celdaAcciones = tr.querySelector('.acciones');
+  const btnEditar = document.createElement('button');
+  btnEditar.className = 'btn-accion';
+  btnEditar.textContent = 'Editar';
+  btnEditar.addEventListener('click', () => abrirModalEditar(art));
+
+  const btnEliminar = document.createElement('button');
+  btnEliminar.className = 'btn-accion';
+  btnEliminar.textContent = 'Eliminar';
+  btnEliminar.addEventListener('click', () => confirmarEliminarArticulo(art));
+
+  celdaAcciones.append(btnEditar, btnEliminar);
   return tr;
 }
 
@@ -266,6 +276,19 @@ async function cargarDashboard() {
     MovimientosAPI.listar(),
   ]);
 
+  renderKpis(articulos, movimientos);
+  inicializarFiltros(articulos);
+}
+
+// Se llama después de crear/editar/eliminar un artículo (Fase 6). Reutiliza
+// inicializarFiltros: repuebla las opciones de categoría/proveedor (por si el
+// artículo nuevo trajo una que no existía) y vuelve a aplicar los filtros que
+// el usuario ya tenía puestos, en vez de resetear la vista a cero.
+async function recargarArticulos() {
+  const [articulos, movimientos] = await Promise.all([
+    CatalogoAPI.listarArticulos(),
+    MovimientosAPI.listar(),
+  ]);
   renderKpis(articulos, movimientos);
   inicializarFiltros(articulos);
 }

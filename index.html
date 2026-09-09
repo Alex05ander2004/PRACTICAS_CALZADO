@@ -56,7 +56,10 @@
       </section>
 
       <section id="seccionTabla">
-        <h2 class="section-titulo">Inventario</h2>
+        <div class="section-header">
+          <h2 class="section-titulo">Inventario</h2>
+          <button id="btnNuevoArticulo" class="btn-primario btn-chico">+ Nuevo artículo</button>
+        </div>
 
         <div class="filtros">
           <input
@@ -123,6 +126,155 @@
     </main>
   </div>
 
+  <!-- ============================================================ -->
+  <!-- MODAL: CREAR / EDITAR ARTÍCULO                                -->
+  <!-- ============================================================ -->
+  <div id="modalArticulo" class="modal-backdrop" hidden>
+    <form id="formArticulo" class="modal-tarjeta" novalidate>
+      <div class="modal-header">
+        <h3 id="modalArticuloTitulo">Nuevo artículo</h3>
+        <button type="button" id="btnCerrarModalArticulo" class="btn-cerrar" aria-label="Cerrar">×</button>
+      </div>
+
+      <div id="modalArticuloError" class="login-error" hidden></div>
+
+      <!-- Solo al crear: elegir si es un modelo nuevo o una talla más de uno existente -->
+      <fieldset id="grupoModoProducto" class="grupo-modo">
+        <legend>Producto</legend>
+        <label class="opcion-radio">
+          <input type="radio" name="modoProducto" value="EXISTENTE" checked />
+          Talla nueva de un producto existente
+        </label>
+        <label class="opcion-radio">
+          <input type="radio" name="modoProducto" value="NUEVO" />
+          Producto nuevo
+        </label>
+      </fieldset>
+
+      <div id="campoProductoExistente" class="campo">
+        <label for="campoProducto">Producto</label>
+        <select id="campoProducto"></select>
+      </div>
+
+      <div class="fila-2" id="bloqueModeloMarca">
+        <div class="campo">
+          <label for="campoModelCode">Código de modelo</label>
+          <input id="campoModelCode" type="text" placeholder="ZAP-066" />
+        </div>
+        <div class="campo">
+          <label for="campoMarca">Marca</label>
+          <select id="campoMarca"></select>
+        </div>
+      </div>
+
+      <div class="campo" id="grupoNombre">
+        <label for="campoNombre">Nombre</label>
+        <input id="campoNombre" type="text" required />
+      </div>
+
+      <div class="fila-2" id="bloqueCategoriaProveedor">
+        <div class="campo">
+          <label for="campoCategoria">Categoría</label>
+          <select id="campoCategoria"></select>
+        </div>
+        <div class="campo">
+          <label for="campoProveedor">Proveedor</label>
+          <select id="campoProveedor"></select>
+        </div>
+      </div>
+
+      <div class="campo" id="grupoDescripcion">
+        <label for="campoDescripcion">Descripción</label>
+        <textarea id="campoDescripcion" rows="2"></textarea>
+      </div>
+
+      <hr class="modal-divisor" />
+
+      <div class="fila-3">
+        <div class="campo">
+          <label for="campoSku">SKU</label>
+          <input id="campoSku" type="text" required />
+        </div>
+        <div class="campo">
+          <label for="campoTalla">Talla (EU)</label>
+          <input id="campoTalla" type="text" required />
+        </div>
+        <div class="campo" id="campoAlmacenGrupo">
+          <label for="campoAlmacen">Almacén</label>
+          <select id="campoAlmacen">
+            <option value="ALM-A">Almacén A</option>
+            <option value="BOD-B">Bodega B</option>
+            <option value="BOD-C">Bodega C</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="fila-4">
+        <div class="campo">
+          <label for="campoPeso">Peso (kg)</label>
+          <input id="campoPeso" type="number" step="0.01" min="0" />
+        </div>
+        <div class="campo">
+          <label for="campoLargo">Largo (cm)</label>
+          <input id="campoLargo" type="number" step="0.1" min="0" />
+        </div>
+        <div class="campo">
+          <label for="campoAncho">Ancho (cm)</label>
+          <input id="campoAncho" type="number" step="0.1" min="0" />
+        </div>
+        <div class="campo">
+          <label for="campoAlto">Alto (cm)</label>
+          <input id="campoAlto" type="number" step="0.1" min="0" />
+        </div>
+      </div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoCosto">Costo (S/)</label>
+          <input id="campoCosto" type="number" step="0.01" min="0" />
+        </div>
+        <div class="campo">
+          <label for="campoPrecio">Precio (S/)</label>
+          <input id="campoPrecio" type="number" step="0.01" min="0" />
+        </div>
+      </div>
+
+      <div class="fila-2" id="grupoUmbrales">
+        <div class="campo">
+          <label for="campoStockMinimo">Stock mínimo</label>
+          <input id="campoStockMinimo" type="number" step="1" min="0" value="5" />
+        </div>
+        <div class="campo">
+          <label for="campoStockMaximo">Stock máximo</label>
+          <input id="campoStockMaximo" type="number" step="1" min="0" />
+        </div>
+      </div>
+
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarArticulo" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnGuardarArticulo" class="btn-primario">Guardar</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: CONFIRMAR ELIMINACIÓN                                  -->
+  <!-- ============================================================ -->
+  <div id="modalConfirmar" class="modal-backdrop" hidden>
+    <div class="modal-tarjeta modal-tarjeta--chica">
+      <div class="modal-header">
+        <h3 id="modalConfirmarTitulo">Confirmar</h3>
+      </div>
+      <p id="modalConfirmarMensaje" class="modal-mensaje"></p>
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarConfirmar" class="btn-secundario">Cancelar</button>
+        <button type="button" id="btnAceptarConfirmar" class="btn-peligro">Eliminar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
   <!-- Orden importa: supabase-js primero, config y cliente antes que los módulos que los usan. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="js/config.js"></script>
@@ -134,5 +286,6 @@
   <script src="js/api/alertas.js"></script>
   <script src="js/custom-select.js"></script>
   <script src="js/dashboard.js"></script>
+  <script src="js/articulo-modal.js"></script>
 </body>
 </html>

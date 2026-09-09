@@ -6,6 +6,8 @@
 --     migrations/02_mejoras_operativas.sql -> control operativo y error humano
 --     migrations/03_rls.sql                -> seguridad: RLS, API pública, permisos
 --     migrations/04_publico_por_edad.sql   -> calzado infantil en nivel 1, adulto en 2+
+--     migrations/05_umbrales_inventario.sql-> editar min_stock/max_stock por columna
+--     migrations/06_crear_registro_inventario.sql -> crear el primer registro de stock
 --
 --  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
 --  vez sobre una base vacía. Es idempotente. Requiere PostgreSQL 15+.
@@ -3049,3 +3051,110 @@ create trigger trg_assign_publico_nivel
 
 comment on trigger trg_assign_publico_nivel on public.position_assignments is
   'Regla del jefe de almacén: infantil abajo (nivel 1), adulto arriba (nivel 2+). Se aplica en la base, no confía en que la UI la respete.';
+
+
+-- =============================================================================
+--  MIGRACIÓN 05 — PERMITIR EDITAR min_stock / max_stock SIN ABRIR quantity
+--
+--  La migración 03 le dio a `inventory` SOLO política de SELECT: a propósito,
+--  para que nadie mueva `quantity` fuera del workflow de aprobación. Pero eso
+--  también bloqueaba min_stock/max_stock, que son umbrales de configuración,
+--  no stock físico — y el README pide explícitamente poder "modificar
+--  información del inventario".
+--
+--  La solución no es abrir toda la fila: RLS es por FILA, no por columna, así
+--  que una policy de UPDATE por sí sola no puede decir "sí a min_stock, no a
+--  quantity". Para eso existe el GRANT por columna de Postgres — una capa
+--  totalmente independiente de RLS. Con las dos juntas: la policy decide QUIÉN
+--  puede tocar la fila, el grant decide QUÉ columnas puede tocar, y un intento
+--  de UPDATE quantity falla con "permission denied for column quantity" así
+--  la policy lo hubiera permitido.
+--
+--  Requiere 01-04. Idempotente.
+-- =============================================================================
+
+grant update (min_stock, max_stock) on public.inventory to authenticated;
+
+drop policy if exists p_inventory_update_umbrales on public.inventory;
+create policy p_inventory_update_umbrales on public.inventory
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+comment on policy p_inventory_update_umbrales on public.inventory is
+  'Solo min_stock/max_stock son editables por columna (ver el GRANT de arriba). quantity/qty_reserved/qty_incoming siguen sin ningún grant de UPDATE: ni esta política los alcanza.';
+
+
+-- =============================================================================
+--  MIGRACIÓN 06 — CREAR EL PRIMER REGISTRO DE INVENTARIO DE UN ARTÍCULO
+--
+--  `inventory` solo tiene política de SELECT (migración 03) y ningún GRANT de
+--  INSERT: a propósito, para que la única forma de que exista stock sea pasar
+--  por una función revisada, nunca un INSERT/UPDATE suelto del cliente. Pero
+--  el README pide poder "crear registros de inventario" para un artículo
+--  nuevo, y hoy no hay ningún camino para eso desde el cliente.
+--
+--  La resuelve una función SECURITY DEFINER más — mismo patrón que aprobar,
+--  ejecutar, rechazar. Si se carga una cantidad inicial mayor a cero (por
+--  ejemplo, al digitalizar un artículo que físicamente ya está en el
+--  almacén), queda su asiento en stock_ledger: ninguna unidad de stock existe
+--  sin un origen auditable, tampoco esta.
+--
+--  Requiere 01-05. Idempotente.
+-- =============================================================================
+
+create or replace function public.crear_registro_inventario(
+  p_item_id      uuid,
+  p_warehouse_code text,
+  p_quantity     integer default 0,
+  p_min_stock    integer default 0,
+  p_max_stock    integer default null
+)
+returns public.inventory
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_wh_id uuid;
+  v_inv   public.inventory;
+  v_actor uuid;
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  v_actor := public.actor_actual();
+
+  if p_quantity < 0 then
+    raise exception 'La cantidad inicial no puede ser negativa.';
+  end if;
+
+  select id into v_wh_id from public.warehouses where code = p_warehouse_code;
+  if v_wh_id is null then
+    raise exception 'No existe el almacén %.', p_warehouse_code;
+  end if;
+
+  if exists (select 1 from public.inventory where item_id = p_item_id and warehouse_id = v_wh_id) then
+    raise exception 'Este artículo ya tiene un registro de inventario en ese almacén. Edítalo en vez de crear otro.';
+  end if;
+
+  insert into public.inventory (item_id, warehouse_id, quantity, min_stock, max_stock)
+  values (p_item_id, v_wh_id, p_quantity, p_min_stock, p_max_stock)
+  returning * into v_inv;
+
+  -- Ninguna unidad de stock existe sin asiento en el kardex, tampoco la
+  -- carga inicial: si el artículo ya tenía existencias físicas al
+  -- digitalizarlo, esto lo deja igual de trazable que un movimiento normal.
+  if p_quantity > 0 then
+    insert into public.stock_ledger (item_id, warehouse_id, qty_delta, qty_before, qty_after, executed_by, notes)
+    values (p_item_id, v_wh_id, p_quantity, 0, p_quantity, v_actor, 'Carga inicial de inventario (artículo nuevo)');
+  end if;
+
+  return v_inv;
+end;
+$$;
+
+grant execute on function public.crear_registro_inventario(uuid, text, integer, integer, integer) to authenticated;
+
+comment on function public.crear_registro_inventario is
+  'Único camino para que exista una fila de inventory: SUPERVISOR+ , dispara un asiento en stock_ledger si arranca con cantidad > 0.';
+
+

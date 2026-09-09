@@ -51,6 +51,36 @@ const InventarioAPI = {
     return data;
   },
 
+  // Único camino para que exista una fila de inventory (RLS no da INSERT
+  // directo — ver migración 06). warehouseCode: 'ALM-A' | 'BOD-B' | 'BOD-C'.
+  async crearRegistroInventario({ itemId, warehouseCode, quantity = 0, minStock = 0, maxStock = null }) {
+    const { data, error } = await supabaseClient.rpc('crear_registro_inventario', {
+      p_item_id: itemId,
+      p_warehouse_code: warehouseCode,
+      p_quantity: quantity,
+      p_min_stock: minStock,
+      p_max_stock: maxStock,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // Solo min_stock/max_stock son editables aquí — quantity/qty_reserved/
+  // qty_incoming no tienen GRANT de columna (migración 05), así que ni
+  // intentarlo: aunque se mandaran, Postgres los rechaza con "permission
+  // denied for column quantity" antes de que importe qué diga esta función.
+  async actualizarUmbrales(inventoryId, { minStock, maxStock }) {
+    const { data, error } = await supabaseClient
+      .from('inventory')
+      .update({ min_stock: minStock, max_stock: maxStock })
+      .eq('id', inventoryId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
   async liberarPosicion(assignmentId) {
     const { data, error } = await supabaseClient
       .from('position_assignments')
