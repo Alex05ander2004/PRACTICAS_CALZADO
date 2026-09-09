@@ -56,6 +56,33 @@ function mostrarDashboard() {
   document.getElementById('pantallaDashboard').hidden = false;
 }
 
+// --- Pestañas (Inventario / Movimientos / Mapa) ---------------------------
+// Patrón ARIA tabs estándar: una pestaña activa a la vez, flechas para
+// moverse entre ellas sin salir del tabbar, cada panel enlazado por
+// aria-labelledby en vez de depender del orden en el DOM.
+function activarTab(idBoton) {
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    const activo = btn.id === idBoton;
+    btn.setAttribute('aria-selected', String(activo));
+    btn.tabIndex = activo ? 0 : -1;
+  });
+  document.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+    panel.hidden = panel.getAttribute('aria-labelledby') !== idBoton;
+  });
+}
+
+const botonesTab = [...document.querySelectorAll('.tab-btn')];
+botonesTab.forEach((btn, i) => {
+  btn.addEventListener('click', () => activarTab(btn.id));
+  btn.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const siguiente = botonesTab[(i + (e.key === 'ArrowRight' ? 1 : -1) + botonesTab.length) % botonesTab.length];
+    siguiente.focus();
+    activarTab(siguiente.id);
+  });
+});
+
 function renderTopbar(perfil) {
   document.getElementById('usuarioNombre').textContent = perfil.full_name;
   document.getElementById('usuarioRol').textContent = perfil.role;
@@ -147,7 +174,12 @@ function filaArticulo(art) {
   btnEliminar.textContent = 'Eliminar';
   btnEliminar.addEventListener('click', () => confirmarEliminarArticulo(art));
 
-  celdaAcciones.append(btnEditar, btnEliminar);
+  const btnUbicar = document.createElement('button');
+  btnUbicar.className = 'btn-accion';
+  btnUbicar.textContent = 'Ubicar';
+  btnUbicar.addEventListener('click', () => abrirModalUbicar(art));
+
+  celdaAcciones.append(btnEditar, btnUbicar, btnEliminar);
   return tr;
 }
 
@@ -348,13 +380,15 @@ async function cargarDashboard() {
   mostrarDashboard();
   renderTopbar(perfil);
 
-  const [articulos, movimientos] = await Promise.all([
+  const [articulos, movimientos, mapa] = await Promise.all([
     CatalogoAPI.listarArticulos(),
     MovimientosAPI.listar(),
+    InventarioAPI.obtenerMapaAlmacen(),
   ]);
 
   renderKpis(articulos, movimientos);
   renderMovimientos(movimientos);
+  inicializarMapa(mapa);
   inicializarFiltros(articulos);
 }
 
@@ -363,12 +397,14 @@ async function cargarDashboard() {
 // artículo nuevo trajo una que no existía) y vuelve a aplicar los filtros que
 // el usuario ya tenía puestos, en vez de resetear la vista a cero.
 async function recargarArticulos() {
-  const [articulos, movimientos] = await Promise.all([
+  const [articulos, movimientos, mapa] = await Promise.all([
     CatalogoAPI.listarArticulos(),
     MovimientosAPI.listar(),
+    InventarioAPI.obtenerMapaAlmacen(),
   ]);
   renderKpis(articulos, movimientos);
   renderMovimientos(movimientos);
+  inicializarMapa(mapa);
   inicializarFiltros(articulos);
 }
 

@@ -249,6 +249,7 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
   } catch (err) {
     errorEl.textContent = err.message ?? 'No se pudo guardar. Intenta de nuevo.';
     errorEl.hidden = false;
+    errorEl.focus();
   } finally {
     boton.disabled = false;
     boton.textContent = textoOriginalBoton;

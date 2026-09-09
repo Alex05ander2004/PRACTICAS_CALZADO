@@ -55,7 +55,13 @@
         </div>
       </section>
 
-      <section id="seccionTabla">
+      <nav class="tabs" role="tablist" aria-label="Secciones del inventario">
+        <button type="button" class="tab-btn" role="tab" id="tabInventario" aria-controls="seccionTabla" aria-selected="true">Inventario</button>
+        <button type="button" class="tab-btn" role="tab" id="tabMovimientos" aria-controls="seccionMovimientos" aria-selected="false" tabindex="-1">Movimientos</button>
+        <button type="button" class="tab-btn" role="tab" id="tabMapa" aria-controls="seccionMapa" aria-selected="false" tabindex="-1">Mapa del almacén</button>
+      </nav>
+
+      <section id="seccionTabla" role="tabpanel" aria-labelledby="tabInventario">
         <div class="section-header">
           <h2 class="section-titulo">Inventario</h2>
           <button id="btnNuevoArticulo" class="btn-primario btn-chico">+ Nuevo artículo</button>
@@ -95,14 +101,14 @@
           <table>
             <colgroup>
               <col style="width: 11%" />
-              <col style="width: 22%" />
-              <col style="width: 10%" />
+              <col style="width: 20%" />
+              <col style="width: 8%" />
               <col style="width: 7%" />
-              <col style="width: 9%" />
-              <col style="width: 9%" />
-              <col style="width: 13%" />
-              <col style="width: 9%" />
-              <col style="width: 10%" />
+              <col style="width: 8%" />
+              <col style="width: 8%" />
+              <col style="width: 12%" />
+              <col style="width: 8%" />
+              <col style="width: 18%" />
             </colgroup>
             <thead>
               <tr>
@@ -124,7 +130,7 @@
         </div>
       </section>
 
-      <section id="seccionMovimientos">
+      <section id="seccionMovimientos" role="tabpanel" aria-labelledby="tabMovimientos" hidden>
         <div class="section-header">
           <h2 class="section-titulo">Movimientos</h2>
           <button id="btnNuevoMovimiento" class="btn-primario btn-chico">+ Nuevo movimiento</button>
@@ -158,6 +164,38 @@
               <tr><td colspan="8" class="skeleton">Cargando movimientos…</td></tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="seccionMapa" role="tabpanel" aria-labelledby="tabMapa" hidden>
+        <div class="section-header">
+          <h2 class="section-titulo">Mapa del almacén</h2>
+        </div>
+
+        <div class="filtros">
+          <select id="filtroMapaAlmacen" class="filtro-select">
+            <option value="">Almacén: todos</option>
+            <option value="ALM-A">Almacén A</option>
+            <option value="BOD-B">Bodega B</option>
+            <option value="BOD-C">Bodega C</option>
+          </select>
+          <label class="opcion-radio">
+            <input type="checkbox" id="filtroMapaSoloLibres" />
+            Solo posiciones libres
+          </label>
+        </div>
+        <p id="contadorMapa" class="contador-resultados" role="status" aria-live="polite"></p>
+
+        <div class="mapa-leyenda">
+          <span class="mapa-leyenda-item"><span class="mapa-swatch libre"></span>Libre</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch ocupada"></span>Ocupada</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch reservada"></span>Reservada</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch en_picking"></span>En picking</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Nivel 1 · infantil</span>
+        </div>
+
+        <div id="mapaVisual" class="mapa-visual">
+          <p class="skeleton">Cargando mapa…</p>
         </div>
       </section>
     </main>
@@ -392,6 +430,67 @@
     </form>
   </div>
 
+  <!-- ============================================================ -->
+  <!-- MODAL: UBICAR ARTÍCULO (asignar / liberar posición)           -->
+  <!-- ============================================================ -->
+  <div id="modalUbicacion" class="modal-backdrop" hidden>
+    <form id="formUbicacion" class="modal-tarjeta" novalidate>
+      <div class="modal-header">
+        <h3 id="modalUbicacionTitulo">Ubicar artículo</h3>
+        <button type="button" id="btnCerrarModalUbicacion" class="btn-cerrar" aria-label="Cerrar">×</button>
+      </div>
+
+      <div id="modalUbicacionError" class="login-error" role="alert" tabindex="-1" hidden></div>
+
+      <div class="campo" id="grupoUbicacionActual" hidden>
+        <label>Ubicación actual</label>
+        <div class="linea-ubicacion-actual">
+          <span id="ubicacionActualTexto"></span>
+          <button type="button" id="btnLiberarUbicacionActual" class="btn-accion">Liberar</button>
+        </div>
+      </div>
+
+      <div class="campo">
+        <label for="campoUbicAlmacen">Almacén</label>
+        <select id="campoUbicAlmacen">
+          <option value="ALM-A">Almacén A</option>
+          <option value="BOD-B">Bodega B</option>
+          <option value="BOD-C">Bodega C</option>
+        </select>
+      </div>
+
+      <div class="campo">
+        <label for="campoUbicPosicion">Posición libre</label>
+        <select id="campoUbicPosicion" required></select>
+      </div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoUbicEstado">Asignar como</label>
+          <select id="campoUbicEstado">
+            <option value="OCUPADA">Ocupada (stock ya ubicado ahí)</option>
+            <option value="RESERVADA">Reservada (espacio para un INBOUND)</option>
+            <option value="EN_PICKING">En picking (preparando un OUTBOUND)</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="campoUbicCantidad">Cantidad</label>
+          <input id="campoUbicCantidad" type="number" min="1" step="1" required />
+        </div>
+      </div>
+
+      <div class="campo">
+        <label for="campoUbicNotas">Notas</label>
+        <input id="campoUbicNotas" type="text" />
+      </div>
+
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarUbicacion" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnGuardarUbicacion" class="btn-primario">Asignar posición</button>
+      </div>
+    </form>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <!-- Orden importa: supabase-js primero, config y cliente antes que los módulos que los usan. -->
@@ -407,5 +506,6 @@
   <script src="js/dashboard.js"></script>
   <script src="js/articulo-modal.js"></script>
   <script src="js/movimiento-modal.js"></script>
+  <script src="js/mapa-modal.js"></script>
 </body>
 </html>
