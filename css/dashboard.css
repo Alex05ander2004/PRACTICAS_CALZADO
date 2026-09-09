@@ -163,7 +163,7 @@ button {
 }
 .tarjeta-login .btn-primario { margin-top: 14px; }
 .btn-primario:hover { filter: brightness(1.08); }
-.btn-primario:disabled { opacity: .6; cursor: default; }
+.btn-primario:disabled { opacity: .5; cursor: default; }
 
 .login-error {
   background: var(--bad-weak);
@@ -526,6 +526,7 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 .pill.warn { background: var(--warn-weak); color: var(--warn); }
 .pill.bad  { background: var(--bad-weak);  color: var(--bad); }
 .pill.nino { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+.pill.info { background: var(--accent-weak); color: var(--accent); }
 
 .acciones { display: flex; gap: 6px; overflow: visible; white-space: normal; }
 
@@ -631,8 +632,14 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
   color: var(--muted);
   font-size: 22px;
   line-height: 1;
-  padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: 8px;
+  /* 44x44 mínimo: es plausible que esto corra en una tablet táctil de
+     almacén, no solo en escritorio con mouse. */
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .btn-cerrar:hover { background: var(--surface-2); color: var(--ink); }
 

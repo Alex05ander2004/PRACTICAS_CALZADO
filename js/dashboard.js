@@ -24,6 +24,18 @@ const ETIQUETA_ESTADO = {
   SIN_DATO: { texto: 'Sin registro', clase: 'warn' },
 };
 
+// situacion viene ya calculada de v_movimientos_detalle (no de status a
+// secas): distingue un APROBADO que todavía no se ejecutó de uno que sí,
+// que es justo la diferencia que separa "aprobar" de "ejecutar" en este sistema.
+const ETIQUETA_SITUACION = {
+  PENDIENTE: { texto: 'Pendiente', clase: 'warn' },
+  APROBADO_SIN_EJECUTAR: { texto: 'Aprobado', clase: 'info' },
+  EJECUTADO: { texto: 'Ejecutado', clase: 'ok' },
+  RECHAZADO: { texto: 'Rechazado', clase: 'bad' },
+  REVERTIDO: { texto: 'Revertido', clase: 'bad' },
+  REVERSION: { texto: 'Reversión', clase: 'info' },
+};
+
 // Un artículo puede tener stock en más de un almacén; para la vista resumen
 // se suma. inventory[0] se usa para min/max porque, en este proyecto, cada
 // artículo vive en un solo almacén (ver DISENO.md) — sumar cantidades es
@@ -159,6 +171,71 @@ function renderTabla(articulos, hayFiltrosActivos) {
   cuerpo.appendChild(fragmento);
 }
 
+function crearBotonAccion(texto, onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'btn-accion';
+  btn.textContent = texto;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+// Qué botones aparecen depende de `situacion`, no de `status`: un movimiento
+// APROBADO todavía puede estar esperando ejecución física, y ahí el único
+// botón útil es "Ejecutar", no "Aprobar" de nuevo.
+function filaMovimiento(mov) {
+  const fecha = new Date(mov.created_at).toLocaleDateString('es-PE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const tipoTexto = { ENTRADA: 'Entrada', SALIDA: 'Salida', AJUSTE: 'Ajuste' }[mov.movement_type] ?? mov.movement_type;
+  const { texto, clase } = ETIQUETA_SITUACION[mov.situacion] ?? { texto: mov.situacion, clase: 'warn' };
+
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="mono">${fecha}</td>
+    <td class="mono">${mov.sku}</td>
+    <td>${mov.producto}${mov.talla ? ' · Talla ' + mov.talla : ''}</td>
+    <td>${tipoTexto}</td>
+    <td class="celda-num">${mov.quantity}</td>
+    <td>${mov.reason ?? '—'}</td>
+    <td><span class="pill ${clase}">${texto}</span></td>
+    <td class="acciones"></td>
+  `;
+
+  const celdaAcciones = tr.querySelector('.acciones');
+  if (mov.situacion === 'PENDIENTE') {
+    celdaAcciones.append(
+      crearBotonAccion('Aprobar', () => aprobarMovimientoUI(mov)),
+      crearBotonAccion('Rechazar', () => solicitarMotivoYRechazar(mov))
+    );
+  } else if (mov.situacion === 'APROBADO_SIN_EJECUTAR') {
+    celdaAcciones.append(crearBotonAccion('Ejecutar', () => ejecutarMovimientoUI(mov)));
+  } else if (mov.situacion === 'EJECUTADO') {
+    celdaAcciones.append(crearBotonAccion('Revertir', () => solicitarMotivoYRevertir(mov)));
+  } else {
+    celdaAcciones.textContent = '—';
+  }
+
+  return tr;
+}
+
+function renderMovimientos(movimientos) {
+  const cuerpo = document.getElementById('tablaMovimientosBody');
+  cuerpo.innerHTML = '';
+
+  if (movimientos.length === 0) {
+    cuerpo.innerHTML = `<tr><td colspan="8">
+      <div class="estado-vacio"><p>Sin movimientos todavía</p><p>Crea el primero con "+ Nuevo movimiento".</p></div>
+    </td></tr>`;
+    return;
+  }
+
+  const fragmento = document.createDocumentFragment();
+  for (const mov of movimientos) fragmento.appendChild(filaMovimiento(mov));
+  cuerpo.appendChild(fragmento);
+}
+
 // --- Búsqueda y filtros (Fase 5) -------------------------------------------
 // Todo se filtra en el navegador: con ~80 artículos no hace falta ir a la base
 // por cada tecleo, y así el buscador responde al instante.
@@ -277,6 +354,7 @@ async function cargarDashboard() {
   ]);
 
   renderKpis(articulos, movimientos);
+  renderMovimientos(movimientos);
   inicializarFiltros(articulos);
 }
 
@@ -290,6 +368,7 @@ async function recargarArticulos() {
     MovimientosAPI.listar(),
   ]);
   renderKpis(articulos, movimientos);
+  renderMovimientos(movimientos);
   inicializarFiltros(articulos);
 }
 
@@ -310,6 +389,7 @@ document.getElementById('formLogin').addEventListener('submit', async (evento) =
   } catch (err) {
     errorEl.textContent = 'No se pudo iniciar sesión: correo o contraseña incorrectos.';
     errorEl.hidden = false;
+    errorEl.focus(); // con role="alert" ya se anuncia solo; esto además lo pone a la vista de quien navega con teclado
   } finally {
     boton.disabled = false;
     boton.textContent = 'Iniciar sesión';

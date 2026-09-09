@@ -29,7 +29,7 @@
       <input id="loginPassword" type="password" required autocomplete="current-password" />
 
       <button type="submit" class="btn-primario">Iniciar sesión</button>
-      <p id="loginError" class="login-error" hidden></p>
+      <p id="loginError" class="login-error" role="alert" tabindex="-1" hidden></p>
     </form>
   </div>
 
@@ -89,7 +89,7 @@
           <button id="btnLimpiarFiltros" class="btn-accion">Limpiar</button>
         </div>
 
-        <p id="contadorResultados" class="contador-resultados"></p>
+        <p id="contadorResultados" class="contador-resultados" role="status" aria-live="polite"></p>
 
         <div class="tabla-wrap">
           <table>
@@ -123,6 +123,43 @@
           </table>
         </div>
       </section>
+
+      <section id="seccionMovimientos">
+        <div class="section-header">
+          <h2 class="section-titulo">Movimientos</h2>
+          <button id="btnNuevoMovimiento" class="btn-primario btn-chico">+ Nuevo movimiento</button>
+        </div>
+
+        <div class="tabla-wrap">
+          <table>
+            <colgroup>
+              <col style="width: 11%" />
+              <col style="width: 11%" />
+              <col style="width: 20%" />
+              <col style="width: 9%" />
+              <col style="width: 8%" />
+              <col style="width: 19%" />
+              <col style="width: 11%" />
+              <col style="width: 11%" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>SKU</th>
+                <th>Artículo</th>
+                <th>Tipo</th>
+                <th>Cantidad</th>
+                <th>Motivo</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tablaMovimientosBody">
+              <tr><td colspan="8" class="skeleton">Cargando movimientos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -136,7 +173,7 @@
         <button type="button" id="btnCerrarModalArticulo" class="btn-cerrar" aria-label="Cerrar">×</button>
       </div>
 
-      <div id="modalArticuloError" class="login-error" hidden></div>
+      <div id="modalArticuloError" class="login-error" role="alert" tabindex="-1" hidden></div>
 
       <!-- Solo al crear: elegir si es un modelo nuevo o una talla más de uno existente -->
       <fieldset id="grupoModoProducto" class="grupo-modo">
@@ -273,6 +310,88 @@
     </div>
   </div>
 
+  <!-- ============================================================ -->
+  <!-- MODAL: NUEVO MOVIMIENTO                                       -->
+  <!-- ============================================================ -->
+  <div id="modalMovimiento" class="modal-backdrop" hidden>
+    <form id="formMovimiento" class="modal-tarjeta" novalidate>
+      <div class="modal-header">
+        <h3>Nuevo movimiento</h3>
+        <button type="button" id="btnCerrarModalMovimiento" class="btn-cerrar" aria-label="Cerrar">×</button>
+      </div>
+
+      <div id="modalMovimientoError" class="login-error" role="alert" tabindex="-1" hidden></div>
+
+      <div class="campo">
+        <label for="campoMovArticulo">Artículo</label>
+        <select id="campoMovArticulo" required></select>
+      </div>
+
+      <fieldset class="grupo-modo">
+        <legend>Tipo</legend>
+        <label class="opcion-radio">
+          <input type="radio" name="movTipo" value="ENTRADA" checked /> Entrada
+        </label>
+        <label class="opcion-radio">
+          <input type="radio" name="movTipo" value="SALIDA" /> Salida
+        </label>
+        <label class="opcion-radio">
+          <input type="radio" name="movTipo" value="AJUSTE" /> Ajuste
+        </label>
+      </fieldset>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoMovCantidad">Cantidad</label>
+          <input id="campoMovCantidad" type="number" min="1" step="1" required />
+        </div>
+        <div class="campo" id="grupoMovDireccion" hidden>
+          <label for="campoMovDireccion">El ajuste debe</label>
+          <select id="campoMovDireccion">
+            <option value="1">Sumar al stock</option>
+            <option value="-1">Restar del stock</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="campo">
+        <label for="campoMovMotivo">Motivo</label>
+        <input id="campoMovMotivo" type="text" placeholder="Compra de mercadería, pedido de tienda…" />
+      </div>
+
+      <div class="campo">
+        <label for="campoMovNotas">Notas</label>
+        <textarea id="campoMovNotas" rows="2"></textarea>
+      </div>
+
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarMovimiento" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnGuardarMovimiento" class="btn-primario">Crear movimiento</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: MOTIVO (rechazar = opcional, revertir = obligatorio)   -->
+  <!-- ============================================================ -->
+  <div id="modalMotivo" class="modal-backdrop" hidden>
+    <form id="formMotivo" class="modal-tarjeta modal-tarjeta--chica" novalidate>
+      <div class="modal-header">
+        <h3 id="modalMotivoTitulo">Motivo</h3>
+      </div>
+      <p id="modalMotivoMensaje" class="modal-mensaje"></p>
+      <div id="modalMotivoError" class="login-error" role="alert" tabindex="-1" hidden></div>
+      <div class="campo">
+        <label for="campoMotivoTexto" id="campoMotivoLabel">Motivo</label>
+        <textarea id="campoMotivoTexto" rows="2"></textarea>
+      </div>
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarMotivo" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnAceptarMotivo" class="btn-peligro">Confirmar</button>
+      </div>
+    </form>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <!-- Orden importa: supabase-js primero, config y cliente antes que los módulos que los usan. -->
@@ -287,5 +406,6 @@
   <script src="js/custom-select.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/articulo-modal.js"></script>
+  <script src="js/movimiento-modal.js"></script>
 </body>
 </html>

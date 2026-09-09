@@ -16,6 +16,11 @@ const MovimientosAPI = {
 
   // { itemId, inventoryId, positionId, movementType, quantity, reason, notes, expectedQuantity }
   // movementType: 'ENTRADA' | 'SALIDA' | 'AJUSTE'
+  // direction: solo tiene sentido para AJUSTE (1 = suma, -1 = resta). Para
+  // ENTRADA/SALIDA no hace falta mandarlo — el trigger trg_mov_direction lo
+  // deriva solo del tipo. Si no se manda para un AJUSTE, la columna cae en su
+  // default (+1): un "ajuste" que solo pudiera sumar sería el mismo bug que
+  // ya corregimos en el esquema, esta vez del lado del cliente.
   // created_by sale de la sesión actual, nunca de un parámetro: la política
   // p_mov_insert exige created_by = auth.uid(), así que mandar cualquier otro
   // valor haría fallar el INSERT (es justamente lo que impide crear un
@@ -26,20 +31,25 @@ const MovimientosAPI = {
     } = await supabaseClient.auth.getSession();
     if (!session) throw new Error('No hay sesión activa.');
 
+    const fila = {
+      item_id: datos.itemId,
+      inventory_id: datos.inventoryId ?? null,
+      order_id: datos.orderId ?? null,
+      position_id: datos.positionId ?? null,
+      movement_type: datos.movementType,
+      quantity: datos.quantity,
+      expected_quantity: datos.expectedQuantity ?? datos.quantity,
+      reason: datos.reason ?? null,
+      notes: datos.notes ?? null,
+      created_by: session.user.id,
+    };
+    if (datos.movementType === 'AJUSTE' && datos.direction) {
+      fila.direction = datos.direction;
+    }
+
     const { data, error } = await supabaseClient
       .from('inventory_movements')
-      .insert({
-        item_id: datos.itemId,
-        inventory_id: datos.inventoryId ?? null,
-        order_id: datos.orderId ?? null,
-        position_id: datos.positionId ?? null,
-        movement_type: datos.movementType,
-        quantity: datos.quantity,
-        expected_quantity: datos.expectedQuantity ?? datos.quantity,
-        reason: datos.reason ?? null,
-        notes: datos.notes ?? null,
-        created_by: session.user.id,
-      })
+      .insert(fila)
       .select()
       .single();
 
