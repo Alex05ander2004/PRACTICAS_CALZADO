@@ -178,6 +178,7 @@ function poblarSelectDesdeArticulos(id, obtenerValor) {
     select.appendChild(opt);
   }
   if (valores.includes(valorPrevio)) select.value = valorPrevio;
+  sincronizarSelectMejorado(id);
 }
 
 function aplicarFiltros() {
@@ -229,12 +230,19 @@ for (const id of ['filtroCategoria', 'filtroProveedor', 'filtroPublico', 'filtro
 }
 document.getElementById('btnLimpiarFiltros').addEventListener('click', () => {
   document.getElementById('filtroTexto').value = '';
-  document.getElementById('filtroCategoria').value = '';
-  document.getElementById('filtroProveedor').value = '';
-  document.getElementById('filtroPublico').value = '';
-  document.getElementById('filtroStock').value = '';
+  for (const id of ['filtroCategoria', 'filtroProveedor', 'filtroPublico', 'filtroStock']) {
+    document.getElementById(id).value = '';
+    sincronizarSelectMejorado(id);
+  }
   aplicarFiltros();
 });
+
+// Los selects nativos siguen siendo la fuente de verdad de los filtros; esto
+// solo les pone encima un dropdown con el mismo estilo que el resto del
+// dashboard (ver js/custom-select.js).
+for (const id of ['filtroCategoria', 'filtroProveedor', 'filtroPublico', 'filtroStock']) {
+  mejorarSelect(id);
+}
 
 async function cargarDashboard() {
   const perfil = await AuthAPI.obtenerPerfilActual();

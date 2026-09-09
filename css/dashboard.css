@@ -329,13 +329,22 @@ section { margin-bottom: 28px; }
 }
 
 .filtro-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   font: inherit;
   font-size: 13px;
-  padding: 8px 10px;
+  padding: 8px 30px 8px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--surface);
+  background-color: var(--surface);
   color: var(--ink);
+  /* Flecha propia: al quitar el "appearance" nativo del <select>, Chrome deja
+     de dibujar la suya, así que hay que reponer una para que se siga viendo
+     como un desplegable y no como un input de texto cualquiera. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%235B6770' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 .filtro-texto:focus-visible,
@@ -343,6 +352,84 @@ section { margin-bottom: 28px; }
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ============================================================================
+   DROPDOWN PROPIO (reemplaza el <select> nativo — ver js/custom-select.js)
+   ========================================================================= */
+.dselect-nativo-oculto {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dselect { position: relative; }
+
+.dselect-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 150px;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+.dselect-trigger:hover { border-color: var(--accent); }
+.dselect-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+
+.dselect-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dselect-flecha {
+  width: 8px; height: 8px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+  flex: none;
+}
+.dselect-trigger[aria-expanded="true"] .dselect-flecha {
+  transform: rotate(-135deg) translateY(1px);
+}
+
+.dselect-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  z-index: 30;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  max-height: 320px;
+  overflow-y: auto;
+  /* El estilo del scrollbar (grosor, color, hover) se define una sola vez,
+     compartido con .tabla-wrap, más abajo en este archivo. */
+}
+
+.dselect-opcion {
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dselect-opcion:hover,
+.dselect-opcion.resaltada { background: var(--surface-2); }
+.dselect-opcion.activa { color: var(--accent); font-weight: 600; }
 
 .contador-resultados {
   font-size: 12.5px;
@@ -358,10 +445,41 @@ section { margin-bottom: 28px; }
   overflow-x: auto;
 }
 
+/* Scrollbar propio, compartido por cualquier contenedor con scroll (la lista
+   del dropdown y esta tabla ancha): el del sistema operativo no hereda el
+   tema y desentona contra esquinas redondeadas y fondo oscuro. */
+.tabla-wrap,
+.dselect-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.tabla-wrap::-webkit-scrollbar,
+.dselect-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.tabla-wrap::-webkit-scrollbar-track,
+.dselect-list::-webkit-scrollbar-track { background: transparent; }
+.tabla-wrap::-webkit-scrollbar-thumb,
+.dselect-list::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  border-radius: 999px;
+  border: 2px solid var(--surface);
+}
+.tabla-wrap::-webkit-scrollbar-thumb:hover,
+.dselect-list::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
+
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13.5px;
+}
+
+td, th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 thead th {
@@ -406,7 +524,7 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 .pill.bad  { background: var(--bad-weak);  color: var(--bad); }
 .pill.nino { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
 
-.acciones { display: flex; gap: 6px; }
+.acciones { display: flex; gap: 6px; overflow: visible; white-space: normal; }
 
 .btn-accion {
   background: var(--surface-2);
