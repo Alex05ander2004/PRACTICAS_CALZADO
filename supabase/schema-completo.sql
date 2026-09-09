@@ -1,0 +1,2947 @@
+-- =============================================================================
+--  WMS CALZADO DEPORTIVO — ESQUEMA COMPLETO (archivo consolidado)
+--
+--  Este archivo es la UNIÓN de las migraciones del proyecto, en orden:
+--     migrations/01_schema_base.sql        -> modelo de datos
+--     migrations/02_mejoras_operativas.sql -> control operativo y error humano
+--     migrations/03_rls.sql                -> seguridad: RLS, API pública, permisos
+--
+--  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
+--  vez sobre una base vacía. Es idempotente: re-ejecutarlo no rompe nada.
+--  Requiere PostgreSQL 15 o superior (por security_invoker en las vistas).
+--
+--  Documentación:
+--     supabase/DISENO.md          -> ERD y decisiones de modelado
+--     docs/ANALISIS-OPERATIVO.md  -> 40 modos de fallo y su tratamiento
+--
+--  Verificación:
+--     tests/01_smoke_test.sql     -> 17 pruebas del workflow de inventario
+--     tests/02_rls_test.sql       -> 14 pruebas de permisos por rol
+-- =============================================================================
+
+
+-- =============================================================================
+--  WMS CALZADO DEPORTIVO — ESQUEMA DE BASE DE DATOS (PostgreSQL / Supabase)
+--  Fase 1: modelo de datos (DDL). SIN RLS y SIN seed data (ver notas al final).
+--
+--  Reconcilia el README del test (inventory / inventory_items / inventory_movements)
+--  con la narrativa operativa del CASO.txt (mapa de almacén, racks, posiciones,
+--  INBOUND/OUTBOUND, reservas de espacio, orden creada vs movimiento ejecutado)
+--  y con las inconsistencias reales del data.csv (casing, formatos de rack /
+--  posicion / fecha).
+--
+--  Orden de las sentencias: primero tablas sin FK, luego dependientes.
+--  Idempotente: se puede re-ejecutar completo en el SQL Editor de Supabase.
+-- =============================================================================
+
+-- Extensión para gen_random_uuid(). En Supabase ya viene habilitada, pero la
+-- dejamos explícita para que el script corra en cualquier Postgres >= 13.
+create extension if not exists "pgcrypto";
+
+-- -----------------------------------------------------------------------------
+-- 0. FUNCIÓN AUXILIAR: mantener updated_at automáticamente
+-- -----------------------------------------------------------------------------
+-- Se define antes que las tablas porque los triggers al final la referencian.
+-- Motivo: updated_at no debe depender de que el cliente (frontend) lo mande;
+-- si el stock se toca desde una RPC, un trigger o el SQL Editor, la marca de
+-- tiempo debe salir igual. Por eso vive en la base de datos, no en la app.
+create or replace function public.fn_set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE A — CATÁLOGOS Y MAPA DEL ALMACÉN (tablas sin FK primero)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- A.1 profiles — quién crea, quién aprueba y quién ejecuta
+-- -----------------------------------------------------------------------------
+-- El CASO distingue dos actores: el EQUIPO LOGÍSTICO (crea órdenes INBOUND /
+-- OUTBOUND y aprueba) y los TRABAJADORES DE ALMACÉN (reciben, ubican y retiran
+-- físicamente). Sin esta tabla no hay trazabilidad de "quién hizo qué" ni base
+-- para las políticas RLS de la Fase 2.
+-- El id se alinea 1:1 con auth.users de Supabase; la FK queda comentada para que
+-- el script también corra en un Postgres limpio sin el esquema auth.
+create table if not exists public.profiles (
+  id          uuid primary key default gen_random_uuid(),
+  -- constraint fk_profiles_auth foreign key (id) references auth.users (id) on delete cascade,
+  full_name   text        not null check (length(btrim(full_name)) > 0),
+  email       text        unique,
+  role        text        not null default 'ALMACEN'
+              check (role in ('ADMIN', 'LOGISTICA', 'ALMACEN')),
+  is_active   boolean     not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+comment on table  public.profiles is 'Usuarios operativos. Fase 2: se enlaza a auth.users y sirve de base para RLS por rol.';
+comment on column public.profiles.role is 'LOGISTICA crea/aprueba órdenes; ALMACEN ejecuta movimientos físicos; ADMIN todo.';
+
+-- -----------------------------------------------------------------------------
+-- A.2 brands / categories / suppliers — catálogos normalizados
+-- -----------------------------------------------------------------------------
+-- El README los pedía como text libre dentro de inventory_items, pero el CSV
+-- demuestra por qué eso no sirve: "NIKE"/"Nike"/"nike" y "Running"/"RUNNING"
+-- serían 3 filtros distintos en el dashboard. Se extraen a catálogos con UNIQUE
+-- sobre un `slug` canónico en minúsculas: la normalización ocurre UNA sola vez
+-- (al importar el CSV) y no se puede volver a ensuciar.
+create table if not exists public.brands (
+  id         uuid primary key default gen_random_uuid(),
+  slug       text        not null unique check (slug = lower(slug) and slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  name       text        not null,          -- forma de presentación: 'New Balance'
+  created_at timestamptz not null default now()
+);
+comment on column public.brands.slug is 'Clave canónica en minúsculas y con guiones (new-balance). Absorbe el casing sucio del CSV.';
+
+create table if not exists public.categories (
+  id         uuid primary key default gen_random_uuid(),
+  slug       text        not null unique check (slug = lower(slug) and slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  name       text        not null,          -- 'Running', 'Casual', 'Lifestyle'
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.suppliers (
+  id            uuid primary key default gen_random_uuid(),
+  slug          text        not null unique check (slug = lower(slug) and slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
+  name          text        not null,
+  contact_email text,
+  contact_phone text,
+  is_active     boolean     not null default true,
+  created_at    timestamptz not null default now()
+);
+comment on table public.suppliers is 'Proveedor como entidad: el CASO habla de "distintos proveedores que anuncian mercadería", así que una orden INBOUND apunta aquí, no a un texto suelto.';
+
+-- -----------------------------------------------------------------------------
+-- A.3 warehouses — almacén / edificio
+-- -----------------------------------------------------------------------------
+-- En el CSV, `ubicacion` ("Almacen A" / "Almacén A" / "Bodega B" / "Bodega C") es
+-- el EDIFICIO, mientras que rack + posicion son la coordenada fina dentro de él.
+-- Separarlos es lo que permite responder "¿qué espacio está ocupado?" por almacén.
+-- El `code` es la clave canónica que resuelve el problema de la tilde inconsistente.
+create table if not exists public.warehouses (
+  id         uuid primary key default gen_random_uuid(),
+  code       text        not null unique check (code ~ '^[A-Z0-9]{2,10}(-[A-Z0-9]{1,10})*$'),  -- 'ALM-A', 'BOD-B'
+  name       text        not null,           -- 'Almacén A' (con tilde, forma correcta)
+  address    text,
+  is_active  boolean     not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- -----------------------------------------------------------------------------
+-- A.4 racks — estanterías dentro de un almacén
+-- -----------------------------------------------------------------------------
+-- El CSV trae 5 formatos para lo mismo: 'Rack-03', 'RACK 01', 'R-02', 'rack 04',
+-- 'Rack 03'. El CHECK obliga al formato canónico RACK-NN y hace imposible volver
+-- a insertar basura. Un rack pertenece a un único almacén (el código se repite
+-- entre almacenes, por eso el UNIQUE es compuesto y no global).
+create table if not exists public.racks (
+  id           uuid        not null default gen_random_uuid() primary key,
+  warehouse_id uuid        not null references public.warehouses (id) on delete restrict,
+  code         text        not null check (code ~ '^RACK-[0-9]{2}$'),   -- 'RACK-01'
+  aisle        text        check (aisle ~ '^[A-Z]$'),                    -- pasillo: A, B, C...
+  description  text,
+  is_active    boolean     not null default true,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint uq_racks_warehouse_code unique (warehouse_id, code)
+);
+-- ON DELETE RESTRICT: borrar un almacén que todavía tiene racks (y por tanto
+-- stock ubicado) sería destruir el mapa físico. Se exige vaciarlo primero.
+
+-- -----------------------------------------------------------------------------
+-- A.5 positions — la posición/slot exacta: la unidad mínima del mapa
+-- -----------------------------------------------------------------------------
+-- El CSV mezcla 'A-03-02', 'A01-03', 'B04-02', 'C02-01'. Formato canónico
+-- adoptado: <PASILLO>-<RACK 2 dígitos>-<SLOT 2 dígitos>  ->  'A-03-02'.
+-- Esta tabla es EL MAPA DEL ALMACÉN: existe aunque esté vacía, lo que permite
+-- responder "qué espacio está libre" (y no solo "qué espacio está usado").
+create table if not exists public.positions (
+  id           uuid primary key default gen_random_uuid(),
+  rack_id      uuid        not null references public.racks (id) on delete restrict,
+  code         text        not null check (code ~ '^[A-Z]-[0-9]{2}-[0-9]{2}$'),  -- 'A-03-02'
+  level        smallint    check (level >= 1),        -- altura/nivel dentro del rack
+  slot         smallint    check (slot  >= 1),        -- casillero dentro del nivel
+  capacity_units integer   not null default 0 check (capacity_units >= 0),
+  is_active    boolean     not null default true,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint uq_positions_rack_code unique (rack_id, code)
+);
+comment on table  public.positions is 'Mapa físico del almacén. Una fila = un espacio direccionable; existe libre u ocupado.';
+comment on column public.positions.capacity_units is '0 = sin límite declarado. Permite validar que no se sobrecargue un slot.';
+
+
+-- =============================================================================
+--  BLOQUE B — PRODUCTO Y VARIANTE (TALLA)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- B.1 products — el MODELO de zapatilla (sin talla)
+-- -----------------------------------------------------------------------------
+-- Decisión clave: el README pedía una sola tabla `inventory_items`, pero en un
+-- almacén de calzado real un mismo modelo existe en muchas tallas y CADA TALLA
+-- tiene su propio stock, su propia ubicación y sus propios movimientos.
+-- Meter la talla dentro de inventory_items sin un padre obligaría a repetir
+-- nombre/marca/categoría/proveedor en 10 filas por modelo (anomalía de
+-- actualización). Se parte en products (modelo) -> inventory_items (variante).
+create table if not exists public.products (
+  id          uuid primary key default gen_random_uuid(),
+  model_code  text        not null unique check (model_code ~ '^[A-Z]{2,5}-[0-9]{3,5}$'),  -- 'ZAP-001' (el `sku` del CSV)
+  name        text        not null check (length(btrim(name)) > 0),
+  description text,
+  brand_id    uuid        references public.brands (id)     on delete set null,
+  category_id uuid        references public.categories (id) on delete set null,
+  supplier_id uuid        references public.suppliers (id)  on delete set null,
+  is_active   boolean     not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+-- ON DELETE SET NULL en los catálogos: borrar una marca no debe borrar productos
+-- ni el histórico de movimientos asociado; solo deja el atributo sin clasificar.
+comment on column public.products.model_code is 'Código del modelo = columna `sku` del CSV (ZAP-001). El SKU vendible vive en inventory_items.';
+
+-- -----------------------------------------------------------------------------
+-- B.2 inventory_items — LA VARIANTE VENDIBLE: modelo + talla (TABLA 2 del README)
+-- -----------------------------------------------------------------------------
+-- Se conserva el nombre exigido por el README. Aquí viven sku, precio, costo y
+-- dimensiones porque en calzado varían por talla (una 44 pesa y ocupa más que
+-- una 36) y el precio puede diferir por talla especial.
+create table if not exists public.inventory_items (
+  id          uuid primary key default gen_random_uuid(),
+  product_id  uuid        not null references public.products (id) on delete restrict,
+  sku         text        not null unique check (sku = upper(sku) and sku ~ '^[A-Z0-9]+(-[A-Z0-9]+)+$'),  -- 'ZAP-001-40'
+  size_label  text        not null check (length(btrim(size_label)) > 0),   -- '40', '41.5'
+  size_system text        not null default 'EU' check (size_system in ('EU', 'US', 'UK')),
+  barcode     text        unique,
+  weight      numeric(10,3) check (weight  is null or weight  >= 0),   -- kg
+  length      numeric(10,2) check (length  is null or length  >= 0),   -- cm
+  width       numeric(10,2) check (width   is null or width   >= 0),   -- cm
+  height      numeric(10,2) check (height  is null or height  >= 0),   -- cm
+  price       numeric(12,2) check (price is null or price >= 0),
+  cost        numeric(12,2) check (cost  is null or cost  >= 0),
+  is_active   boolean     not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint uq_items_product_size unique (product_id, size_label, size_system)
+);
+-- ON DELETE RESTRICT hacia products: un ítem con historial de movimientos no debe
+-- desaparecer por borrar el modelo; se usa is_active = false para retirarlo.
+comment on constraint uq_items_product_size on public.inventory_items is 'Impide duplicar la misma talla del mismo modelo (el error clásico al importar un CSV plano).';
+
+-- -----------------------------------------------------------------------------
+-- B.3 inventory — STOCK ACTUAL (TABLA 1 del README)
+-- -----------------------------------------------------------------------------
+-- El README dice "1 artículo -> 1 registro de inventario". Se respeta esa cardinalidad
+-- POR ALMACÉN: un ítem tiene UNA sola fila de stock en cada almacén (con un solo
+-- almacén, la relación es literalmente 1:1 como pide el README; con varios, sigue
+-- habiendo un único saldo por edificio, que es lo que muestra el dashboard).
+-- El detalle fino de "en qué slot está" NO va aquí: va en position_assignments,
+-- porque un mismo ítem puede estar repartido en varias posiciones.
+create table if not exists public.inventory (
+  id              uuid primary key default gen_random_uuid(),
+  item_id         uuid        not null references public.inventory_items (id) on delete cascade,
+  warehouse_id    uuid        not null references public.warehouses (id)      on delete restrict,
+  quantity        integer     not null default 0 check (quantity >= 0),        -- stock físico disponible
+  qty_reserved    integer     not null default 0 check (qty_reserved >= 0),    -- comprometido por OUTBOUND aprobado y no ejecutado
+  qty_incoming    integer     not null default 0 check (qty_incoming >= 0),    -- esperado por INBOUND aprobado y no ejecutado
+  min_stock       integer     not null default 0 check (min_stock >= 0),
+  max_stock       integer     check (max_stock is null or max_stock >= 0),
+  updated_at      timestamptz not null default now(),
+  created_at      timestamptz not null default now(),
+  constraint uq_inventory_item_warehouse unique (item_id, warehouse_id),
+  constraint ck_inventory_min_max        check (max_stock is null or max_stock >= min_stock),
+  constraint ck_inventory_reserved       check (qty_reserved <= quantity)
+);
+-- ON DELETE CASCADE hacia inventory_items: si el ítem se borra de verdad, su saldo
+-- deja de tener sentido. El histórico (stock_ledger) se conserva aparte.
+comment on column public.inventory.qty_reserved is 'Stock físicamente presente pero ya comprometido a un OUTBOUND aprobado. Disponible real = quantity - qty_reserved.';
+comment on column public.inventory.qty_incoming is 'Unidades anunciadas por un INBOUND aprobado que aún NO llegaron. No suma al stock hasta la ejecución.';
+
+
+-- =============================================================================
+--  BLOQUE C — OCUPACIÓN DEL ESPACIO (el corazón del CASO)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- C.1 position_assignments — qué ítem ocupa (o reserva) qué posición
+-- -----------------------------------------------------------------------------
+-- Responde tres preguntas del CASO con una sola tabla:
+--   a) "qué ubicación ocupa cada producto"      -> fila con status = 'OCUPADA'
+--   b) "cómo reservar espacio para un INBOUND"  -> fila con status = 'RESERVADA'
+--      creada al aprobar la orden, ANTES de que la mercadería llegue
+--   c) "cómo preparar una ubicación para un OUTBOUND" -> status = 'EN_PICKING',
+--      el slot queda bloqueado mientras el operario arma el pedido
+-- 'LIBERADA' cierra la fila y conserva el histórico de ocupación del espacio.
+create table if not exists public.position_assignments (
+  id            uuid primary key default gen_random_uuid(),
+  position_id   uuid        not null references public.positions (id)       on delete restrict,
+  item_id       uuid        not null references public.inventory_items (id) on delete restrict,
+  quantity      integer     not null default 0 check (quantity >= 0),
+  status        text        not null default 'RESERVADA'
+                check (status in ('RESERVADA', 'OCUPADA', 'EN_PICKING', 'LIBERADA')),
+  assigned_at   timestamptz not null default now(),
+  released_at   timestamptz,
+  assigned_by   uuid        references public.profiles (id) on delete set null,
+  notes         text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  -- Coherencia de estados: solo una fila LIBERADA puede tener released_at.
+  constraint ck_assign_released check (
+    (status = 'LIBERADA' and released_at is not null)
+    or (status <> 'LIBERADA' and released_at is null)
+  )
+);
+
+-- *** REGLA ANTI-DOBLE-OCUPACIÓN ***
+-- Índice único PARCIAL: como máximo UNA asignación viva por posición. Impide
+-- físicamente que dos productos distintos ocupen el mismo espacio y también que
+-- se reserve un slot que ya está ocupado o en picking. Al liberar (status =
+-- 'LIBERADA') la fila sale del índice y el espacio queda disponible otra vez,
+-- sin borrar el histórico. Esto es una garantía de la BD, no una validación de la app.
+create unique index if not exists ux_position_assignment_activa
+  on public.position_assignments (position_id)
+  where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING');
+
+
+-- =============================================================================
+--  BLOQUE D — ÓRDENES (lo planificado) vs MOVIMIENTOS (lo ejecutado)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- D.1 inventory_orders — la ORDEN: INBOUND / OUTBOUND (cabecera)
+-- -----------------------------------------------------------------------------
+-- El CASO pide explícitamente "diferenciar una orden creada de un movimiento
+-- realmente ejecutado". Esta tabla es la INTENCIÓN: el equipo logístico anuncia
+-- que un proveedor va a entregar (INBOUND) o que hay un pedido por despachar
+-- (OUTBOUND). No toca el stock jamás.
+create table if not exists public.inventory_orders (
+  id            uuid primary key default gen_random_uuid(),
+  order_number  text        not null unique,             -- 'IN-2026-0001' / 'OUT-2026-0001'
+  order_type    text        not null check (order_type in ('INBOUND', 'OUTBOUND')),
+  status        text        not null default 'PENDIENTE'
+                check (status in ('PENDIENTE', 'APROBADO', 'RECHAZADO', 'EJECUTADO', 'CANCELADO')),
+  warehouse_id  uuid        not null references public.warehouses (id) on delete restrict,
+  supplier_id   uuid        references public.suppliers (id) on delete set null,  -- solo INBOUND
+  customer_name text,                                                             -- solo OUTBOUND (tienda o cliente)
+  expected_date date,                                    -- fecha anunciada de llegada/despacho
+  reason        text,
+  notes         text,
+  created_by    uuid        references public.profiles (id) on delete set null,
+  approved_by   uuid        references public.profiles (id) on delete set null,
+  created_at    timestamptz not null default now(),
+  approved_at   timestamptz,
+  executed_at   timestamptz,
+  updated_at    timestamptz not null default now(),
+  -- Una orden aprobada o rechazada DEBE tener sello de tiempo y responsable:
+  -- sin esto el workflow de aprobación no es auditable.
+  constraint ck_orders_aprobacion check (
+    (status in ('APROBADO', 'EJECUTADO') and approved_at is not null and approved_by is not null)
+    or (status = 'RECHAZADO' and approved_at is not null)
+    or (status in ('PENDIENTE', 'CANCELADO'))
+  ),
+  constraint ck_orders_ejecucion check (
+    (status = 'EJECUTADO' and executed_at is not null)
+    or (status <> 'EJECUTADO')
+  ),
+  -- Un INBOUND exige proveedor; un OUTBOUND exige destinatario.
+  constraint ck_orders_contraparte check (
+    (order_type = 'INBOUND'  and supplier_id   is not null)
+    or (order_type = 'OUTBOUND' and customer_name is not null)
+  )
+);
+comment on table public.inventory_orders is 'La INTENCIÓN (orden creada). Nunca modifica stock. El stock cambia solo cuando un movimiento se ejecuta.';
+
+-- -----------------------------------------------------------------------------
+-- D.2 inventory_movements — EL MOVIMIENTO (TABLA 3 del README)
+-- -----------------------------------------------------------------------------
+-- Es la LÍNEA de la orden y a la vez el objeto del workflow de aprobación.
+-- Ciclo de vida completo:
+--   1) se crea             -> status = 'PENDIENTE', executed_at = NULL  (stock NO cambia)
+--   2) se aprueba          -> status = 'APROBADO',  executed_at = NULL  (stock NO cambia todavía;
+--                             solo se reserva espacio / se compromete stock)
+--   3) se ejecuta físicamente -> executed_at = now() (el operario recibió o retiró);
+--                             recién aquí cambia inventory.quantity y se escribe el ledger
+--   x) se rechaza          -> status = 'RECHAZADO', executed_at siempre NULL (stock NO cambia)
+-- La diferencia "orden creada" vs "movimiento ejecutado" queda en DOS columnas
+-- independientes: `status` (decisión administrativa) y `executed_at` (hecho físico).
+create table if not exists public.inventory_movements (
+  id             uuid primary key default gen_random_uuid(),
+  order_id       uuid        references public.inventory_orders (id) on delete cascade,
+  item_id        uuid        not null references public.inventory_items (id) on delete restrict,
+  inventory_id   uuid        references public.inventory (id) on delete set null,
+  -- inventory_id es NULLABLE a propósito: un INBOUND puede anunciar un ítem que
+  -- todavía no tiene fila de stock en ese almacén; la fila se crea/enlaza al ejecutar.
+  position_id    uuid        references public.positions (id) on delete set null,
+  -- posición destino (INBOUND) u origen (OUTBOUND). Nullable porque un AJUSTE
+  -- contable puede no tener coordenada física.
+  movement_type  text        not null check (movement_type in ('ENTRADA', 'SALIDA', 'AJUSTE')),
+  -- ENTRADA <- INBOUND, SALIDA <- OUTBOUND (mapeo del CSV al vocabulario del README).
+  quantity       integer     not null check (quantity > 0),
+  -- Siempre positivo: el signo lo determina movement_type. Evita el bug clásico
+  -- de una SALIDA con cantidad negativa que termina sumando stock.
+  reason         text,
+  status         text        not null default 'PENDIENTE'
+                 check (status in ('PENDIENTE', 'APROBADO', 'RECHAZADO')),
+  notes          text,
+  created_by     uuid        references public.profiles (id) on delete set null,
+  approved_by    uuid        references public.profiles (id) on delete set null,
+  executed_by    uuid        references public.profiles (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  approved_at    timestamptz,
+  executed_at    timestamptz,
+  updated_at     timestamptz not null default now(),
+  -- Un movimiento rechazado nunca puede estar ejecutado.
+  constraint ck_mov_rechazado_no_ejecutado check (
+    status <> 'RECHAZADO' or executed_at is null
+  ),
+  -- Solo se ejecuta lo aprobado: garantía dura del workflow del README.
+  constraint ck_mov_ejecucion_requiere_aprobacion check (
+    executed_at is null or status = 'APROBADO'
+  ),
+  constraint ck_mov_aprobacion_sellada check (
+    status = 'PENDIENTE' or approved_at is not null
+  )
+);
+comment on column public.inventory_movements.executed_at is 'NULL = orden/línea creada pero NO ejecutada. NOT NULL = el movimiento físico ocurrió y el stock ya se afectó.';
+comment on column public.inventory_movements.quantity  is 'Siempre > 0. El sentido (+/-) lo da movement_type.';
+
+-- -----------------------------------------------------------------------------
+-- D.3 stock_ledger — kardex inmutable: la prueba de lo realmente ejecutado
+-- -----------------------------------------------------------------------------
+-- inventory.quantity es un SALDO (se sobrescribe). El ledger es el HISTÓRICO
+-- append-only que permite reconstruir cómo se llegó a ese saldo y auditar
+-- diferencias de inventario. Guarda el antes/después, no solo el delta.
+create table if not exists public.stock_ledger (
+  id           bigserial primary key,
+  movement_id  uuid        references public.inventory_movements (id) on delete set null,
+  item_id      uuid        not null references public.inventory_items (id) on delete restrict,
+  warehouse_id uuid        not null references public.warehouses (id) on delete restrict,
+  position_id  uuid        references public.positions (id) on delete set null,
+  qty_delta    integer     not null check (qty_delta <> 0),   -- +entrada / -salida
+  qty_before   integer     not null check (qty_before >= 0),
+  qty_after    integer     not null check (qty_after  >= 0),
+  occurred_at  timestamptz not null default now(),
+  executed_by  uuid        references public.profiles (id) on delete set null,
+  notes        text,
+  constraint ck_ledger_aritmetica check (qty_after = qty_before + qty_delta)
+);
+comment on table public.stock_ledger is 'Append-only. Nunca se hace UPDATE/DELETE aquí: es la trazabilidad exigida por el CASO.';
+
+
+-- =============================================================================
+--  BLOQUE E — ÍNDICES
+-- =============================================================================
+-- Postgres crea índice automático para PK y UNIQUE, pero NO para las FK.
+-- Se indexan: (1) todas las FK usadas en joins, (2) las columnas que el dashboard
+-- filtra u ordena (sku, categoría, proveedor, estado, fechas).
+
+-- Mapa del almacén
+create index if not exists ix_racks_warehouse            on public.racks (warehouse_id);
+create index if not exists ix_positions_rack             on public.positions (rack_id);
+
+-- Producto / variante
+create index if not exists ix_products_brand             on public.products (brand_id);
+create index if not exists ix_products_category          on public.products (category_id);
+create index if not exists ix_products_supplier          on public.products (supplier_id);
+create index if not exists ix_products_name_lower        on public.products (lower(name));  -- búsqueda por nombre en el dashboard
+create index if not exists ix_items_product              on public.inventory_items (product_id);
+create index if not exists ix_items_sku_lower            on public.inventory_items (lower(sku));
+
+-- Stock
+create index if not exists ix_inventory_item             on public.inventory (item_id);
+create index if not exists ix_inventory_warehouse        on public.inventory (warehouse_id);
+-- Índice parcial para el widget "alertas de stock bajo": solo indexa las filas
+-- que realmente están por debajo del mínimo, así la consulta más usada del
+-- dashboard no recorre toda la tabla.
+create index if not exists ix_inventory_bajo_minimo      on public.inventory (warehouse_id, item_id)
+  where quantity <= min_stock;
+
+-- Ocupación
+create index if not exists ix_assign_item                on public.position_assignments (item_id);
+create index if not exists ix_assign_status              on public.position_assignments (status);
+create index if not exists ix_assign_position            on public.position_assignments (position_id);
+
+-- Órdenes y movimientos (filtros del dashboard: estado + tipo + fecha)
+create index if not exists ix_orders_status              on public.inventory_orders (status);
+create index if not exists ix_orders_type_status         on public.inventory_orders (order_type, status);
+create index if not exists ix_orders_warehouse           on public.inventory_orders (warehouse_id);
+create index if not exists ix_orders_supplier            on public.inventory_orders (supplier_id);
+create index if not exists ix_orders_created_at          on public.inventory_orders (created_at desc);
+
+create index if not exists ix_mov_order                  on public.inventory_movements (order_id);
+create index if not exists ix_mov_item                   on public.inventory_movements (item_id);
+create index if not exists ix_mov_inventory              on public.inventory_movements (inventory_id);
+create index if not exists ix_mov_position               on public.inventory_movements (position_id);
+create index if not exists ix_mov_status                 on public.inventory_movements (status);
+create index if not exists ix_mov_type_status            on public.inventory_movements (movement_type, status);
+create index if not exists ix_mov_created_at             on public.inventory_movements (created_at desc);
+-- Cola de trabajo: movimientos aprobados pendientes de ejecutar físicamente.
+create index if not exists ix_mov_pendientes_ejecucion   on public.inventory_movements (approved_at)
+  where status = 'APROBADO' and executed_at is null;
+
+create index if not exists ix_ledger_item_fecha          on public.stock_ledger (item_id, occurred_at desc);
+create index if not exists ix_ledger_movement            on public.stock_ledger (movement_id);
+
+
+-- =============================================================================
+--  BLOQUE F — TRIGGERS updated_at
+-- =============================================================================
+drop trigger if exists trg_profiles_updated_at    on public.profiles;
+create trigger trg_profiles_updated_at    before update on public.profiles
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_warehouses_updated_at  on public.warehouses;
+create trigger trg_warehouses_updated_at  before update on public.warehouses
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_racks_updated_at       on public.racks;
+create trigger trg_racks_updated_at       before update on public.racks
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_positions_updated_at   on public.positions;
+create trigger trg_positions_updated_at   before update on public.positions
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_products_updated_at    on public.products;
+create trigger trg_products_updated_at    before update on public.products
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_items_updated_at       on public.inventory_items;
+create trigger trg_items_updated_at       before update on public.inventory_items
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_inventory_updated_at   on public.inventory;
+create trigger trg_inventory_updated_at   before update on public.inventory
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_assign_updated_at      on public.position_assignments;
+create trigger trg_assign_updated_at      before update on public.position_assignments
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_orders_updated_at      on public.inventory_orders;
+create trigger trg_orders_updated_at      before update on public.inventory_orders
+  for each row execute function public.fn_set_updated_at();
+
+drop trigger if exists trg_movements_updated_at   on public.inventory_movements;
+create trigger trg_movements_updated_at   before update on public.inventory_movements
+  for each row execute function public.fn_set_updated_at();
+
+
+-- =============================================================================
+--  BLOQUE G — VISTAS DE LECTURA PARA EL DASHBOARD
+-- =============================================================================
+
+-- G.1 Vista "plana" compatible con la TABLA 2 del README (name/category/supplier
+-- como texto en una sola fila). Permite que el frontend consulte un solo objeto
+-- sin perder la normalización que hay debajo.
+create or replace view public.v_items_detalle as
+select
+  i.id                as item_id,
+  i.sku,
+  p.model_code,
+  p.name,
+  p.description,
+  b.name              as brand,
+  c.name              as category,
+  s.name              as supplier,
+  i.size_label,
+  i.size_system,
+  i.weight, i.length, i.width, i.height,
+  i.price, i.cost,
+  i.is_active,
+  i.created_at
+from public.inventory_items i
+join public.products   p on p.id = i.product_id
+left join public.brands     b on b.id = p.brand_id
+left join public.categories c on c.id = p.category_id
+left join public.suppliers  s on s.id = p.supplier_id;
+
+-- G.2 Stock consolidado con disponibilidad real y semáforo de reposición.
+create or replace view public.v_stock_actual as
+select
+  inv.id                            as inventory_id,
+  inv.item_id,
+  it.sku,
+  p.name                            as producto,
+  it.size_label                     as talla,
+  w.name                            as almacen,
+  inv.quantity,
+  inv.qty_reserved,
+  inv.qty_incoming,
+  (inv.quantity - inv.qty_reserved) as disponible,
+  inv.min_stock,
+  inv.max_stock,
+  case
+    when inv.quantity = 0                   then 'SIN_STOCK'
+    when inv.quantity <= inv.min_stock      then 'BAJO_MINIMO'
+    when inv.max_stock is not null
+         and inv.quantity > inv.max_stock   then 'SOBRE_MAXIMO'
+    else 'OK'
+  end                               as estado_stock,
+  inv.updated_at
+from public.inventory inv
+join public.inventory_items it on it.id = inv.item_id
+join public.products        p  on p.id  = it.product_id
+join public.warehouses      w  on w.id  = inv.warehouse_id;
+
+-- G.3 Mapa de ocupación: TODAS las posiciones, ocupadas y libres.
+-- Es la consulta que alimenta la vista "mapa del almacén" y la que responde
+-- "qué espacio está libre para recibir el próximo INBOUND".
+create or replace view public.v_mapa_almacen as
+select
+  w.code            as almacen_code,
+  w.name            as almacen,
+  r.code            as rack,
+  pos.code          as posicion,
+  pos.capacity_units,
+  pa.status         as estado_ocupacion,   -- NULL = libre
+  pa.quantity       as unidades,
+  it.sku,
+  pr.name           as producto,
+  it.size_label     as talla,
+  pa.assigned_at
+from public.positions pos
+join public.racks      r on r.id = pos.rack_id
+join public.warehouses w on w.id = r.warehouse_id
+left join public.position_assignments pa
+       on pa.position_id = pos.id
+      and pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+left join public.inventory_items it on it.id = pa.item_id
+left join public.products        pr on pr.id = it.product_id;
+
+
+-- =============================================================================
+--  BLOQUE H — RPC DE APROBACIÓN + EJECUCIÓN ATÓMICA
+-- =============================================================================
+-- El README exige que aprobar un movimiento actualice el stock en UNA operación
+-- atómica. Se implementa como función de Postgres (llamable con supabase.rpc)
+-- y no en el cliente: así aprobación, cambio de saldo, asiento del kardex y
+-- liberación/ocupación de la posición ocurren dentro de la MISMA transacción.
+-- El FOR UPDATE sobre la fila de inventario evita condiciones de carrera si dos
+-- operarios aprueban a la vez.
+create or replace function public.fn_aprobar_y_ejecutar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null,
+  p_ejecutar    boolean default true   -- false = solo aprobar (queda en cola de ejecución física)
+)
+returns public.inventory_movements
+language plpgsql
+security invoker           -- Fase 2: evaluar security definer + RLS por rol
+as $$
+declare
+  v_mov   public.inventory_movements;
+  v_inv   public.inventory;
+  v_delta integer;
+  v_wh    uuid;
+begin
+  select * into v_mov from public.inventory_movements
+   where id = p_movement_id for update;
+  if not found then
+    raise exception 'Movimiento % no existe', p_movement_id;
+  end if;
+  if v_mov.status <> 'PENDIENTE' then
+    raise exception 'El movimiento % ya fue resuelto (status=%)', p_movement_id, v_mov.status;
+  end if;
+
+  -- Almacén: de la orden si existe, si no del registro de inventario ligado.
+  select coalesce(o.warehouse_id, inv.warehouse_id)
+    into v_wh
+    from public.inventory_movements m
+    left join public.inventory_orders o on o.id = m.order_id
+    left join public.inventory       inv on inv.id = m.inventory_id
+   where m.id = p_movement_id;
+
+  if p_ejecutar and v_wh is null then
+    raise exception 'No se puede ejecutar el movimiento %: no está ligado a una orden ni a un registro de inventario, así que no se sabe en qué almacén aplicar el stock', p_movement_id;
+  end if;
+
+  update public.inventory_movements
+     set status = 'APROBADO', approved_at = now(), approved_by = p_user_id
+   where id = p_movement_id
+  returning * into v_mov;
+
+  if not p_ejecutar then
+    return v_mov;   -- aprobado pero aún NO ejecutado: stock intacto
+  end if;
+
+  -- Fila de stock: se crea si el ítem aún no tenía saldo en ese almacén.
+  insert into public.inventory (item_id, warehouse_id, quantity)
+  values (v_mov.item_id, v_wh, 0)
+  on conflict (item_id, warehouse_id) do nothing;
+
+  select * into v_inv from public.inventory
+   where item_id = v_mov.item_id and warehouse_id = v_wh for update;
+
+  v_delta := case v_mov.movement_type
+               when 'ENTRADA' then  v_mov.quantity
+               when 'SALIDA'  then -v_mov.quantity
+               else v_mov.quantity            -- AJUSTE: se registra como delta positivo declarado
+             end;
+
+  if v_inv.quantity + v_delta < 0 then
+    raise exception 'Stock insuficiente: hay % y se intenta retirar %', v_inv.quantity, v_mov.quantity;
+  end if;
+
+  update public.inventory
+     set quantity = quantity + v_delta
+   where id = v_inv.id;
+
+  insert into public.stock_ledger (movement_id, item_id, warehouse_id, position_id,
+                                   qty_delta, qty_before, qty_after, executed_by)
+  values (v_mov.id, v_mov.item_id, v_wh, v_mov.position_id,
+          v_delta, v_inv.quantity, v_inv.quantity + v_delta, p_user_id);
+
+  update public.inventory_movements
+     set executed_at = now(), executed_by = p_user_id, inventory_id = v_inv.id
+   where id = v_mov.id
+  returning * into v_mov;
+
+  return v_mov;
+end;
+$$;
+
+-- Rechazo: cierra el movimiento sin tocar el stock (exigencia del README).
+create or replace function public.fn_rechazar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null,
+  p_motivo      text default null
+)
+returns public.inventory_movements
+language plpgsql
+security invoker
+as $$
+declare v_mov public.inventory_movements;
+begin
+  update public.inventory_movements
+     set status = 'RECHAZADO', approved_at = now(), approved_by = p_user_id,
+         notes = coalesce(notes || ' | ', '') || coalesce(p_motivo, 'Rechazado')
+   where id = p_movement_id and status = 'PENDIENTE'
+  returning * into v_mov;
+  if not found then
+    raise exception 'El movimiento % no existe o ya fue resuelto', p_movement_id;
+  end if;
+  return v_mov;   -- stock sin cambios, por diseño
+end;
+$$;
+
+
+-- =============================================================================
+--  CONTINÚA EN LA MIGRACIÓN 02
+-- =============================================================================
+-- 02_mejoras_operativas.sql amplía este esquema con el control operativo que
+-- exige trabajar con personas: auditoría, alertas, aprobaciones escaladas,
+-- reversión de movimientos y conteo cíclico. También corrige cuatro huecos de
+-- este archivo (qty_reserved/qty_incoming sin mantener, AJUSTE que solo podía
+-- sumar, capacity_units sin validar, y ausencia de segregación de funciones).
+-- Ver docs/ANALISIS-OPERATIVO.md para el catálogo completo de casos.
+--
+-- TODO Fase 2: RLS sobre la matriz de roles definida en la migración 02.
+-- TODO Fase 3: carga (seed) del data.csv ya normalizado y datos de demo.
+-- =============================================================================
+
+
+-- =============================================================================
+--  MIGRACIÓN 02 — CONTROL OPERATIVO Y ERROR HUMANO
+--
+--  Origen: docs/ANALISIS-OPERATIVO.md (40 modos de fallo catalogados).
+--  Implementa las tres capas de defensa:
+--     CAPA 1 PREVENIR  -> constraints, segregación de funciones, idempotencia,
+--                         límites por rol, validación de capacidad
+--     CAPA 2 DETECTAR  -> alertas con severidad, reglas configurables
+--     CAPA 3 CORREGIR  -> reversión por contra-asiento, papelera, auditoría,
+--                         aprobaciones escaladas, conteo cíclico
+--
+--  Requiere 01_schema_base.sql. Idempotente: se puede re-ejecutar.
+-- =============================================================================
+
+
+-- =============================================================================
+--  BLOQUE A — CORRECCIONES AL ESQUEMA BASE
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- A.1 profiles: 4 roles reales + límite de autorización por persona
+-- -----------------------------------------------------------------------------
+-- El CASO nombra dos actores, pero una operación real tiene cuatro niveles de
+-- responsabilidad. Sin esta distinción no se puede expresar "esto lo aprueba
+-- alguien de arriba", que es el control que pidió el negocio.
+alter table public.profiles drop constraint if exists profiles_role_check;
+
+update public.profiles
+   set role = case role
+                when 'ALMACEN'   then 'OPERARIO'
+                when 'LOGISTICA' then 'SUPERVISOR'
+                when 'ADMIN'     then 'JEFE'
+                else role
+              end
+ where role in ('ALMACEN', 'LOGISTICA', 'ADMIN');
+
+alter table public.profiles
+  alter column role set default 'OPERARIO',
+  add constraint profiles_role_check
+      check (role in ('OPERARIO', 'SUPERVISOR', 'JEFE', 'AUDITOR'));
+
+-- Techo de autorización individual: cuánto puede aprobar esta persona sin que
+-- la operación escale a un rol superior. NULL = sin techo (JEFE).
+alter table public.profiles
+  add column if not exists max_movement_qty integer
+      check (max_movement_qty is null or max_movement_qty > 0);
+
+comment on column public.profiles.max_movement_qty is
+  'Cantidad máxima que puede aprobar sin escalar. NULL = sin límite. Ataca E-34 (escalamiento de privilegios).';
+
+-- -----------------------------------------------------------------------------
+-- A.2 inventory_movements: dirección, idempotencia, reversión, calidad
+-- -----------------------------------------------------------------------------
+alter table public.inventory_movements
+  -- BUG CORREGIDO: un AJUSTE solo podía sumar (quantity > 0 y la RPC siempre
+  -- sumaba). Era imposible corregir un conteo físico a la baja, que es
+  -- justamente el caso de error humano más común (E-16).
+  add column if not exists direction smallint not null default 1,
+
+  -- Cantidad que se ESPERABA mover, contra la que realmente se movió.
+  -- La diferencia genera una discrepancia (E-01, E-02, E-18).
+  add column if not exists expected_quantity integer
+      check (expected_quantity is null or expected_quantity > 0),
+
+  -- Antídoto del doble clic y de la doble recepción por dos operarios
+  -- (E-06, E-25). El cliente genera una clave por intento de operación.
+  add column if not exists idempotency_key text,
+
+  -- Contra-asiento: enlaza esta reversión con el movimiento que anula (§6).
+  add column if not exists reversal_of_id uuid
+      references public.inventory_movements (id) on delete restrict,
+
+  -- Mercadería que llega dañada no puede sumar al stock vendible (E-05).
+  add column if not exists quality_status text not null default 'BUENO',
+
+  -- Bloqueo optimista contra edición concurrente (E-35).
+  add column if not exists version integer not null default 1;
+
+-- Las SALIDAS ya existentes quedarían con direction = 1 (el default) y violarían
+-- el CHECK que se agrega abajo. Se corrigen antes de imponerlo.
+update public.inventory_movements set direction = -1
+ where movement_type = 'SALIDA' and direction <> -1;
+update public.inventory_movements set direction = 1
+ where movement_type = 'ENTRADA' and direction <> 1;
+
+alter table public.inventory_movements
+  drop constraint if exists ck_mov_direction,
+  drop constraint if exists ck_mov_quality,
+  drop constraint if exists ck_mov_segregacion;
+
+alter table public.inventory_movements
+  -- El signo lo fija el tipo, salvo en AJUSTE donde el operador lo declara.
+  add constraint ck_mov_direction check (
+        (movement_type = 'ENTRADA' and direction =  1)
+     or (movement_type = 'SALIDA'  and direction = -1)
+     or (movement_type = 'AJUSTE'  and direction in (-1, 1))
+  ),
+  add constraint ck_mov_quality check (
+    quality_status in ('BUENO', 'DANADO', 'CUARENTENA')
+  ),
+  -- SEGREGACIÓN DE FUNCIONES: quien crea no puede aprobar. Control interno
+  -- básico que el esquema base no impedía (E-30).
+  -- Excepción explícita: una reversión la emite y autoriza el mismo jefe, porque
+  -- es una corrección de excepción que ya quedó atribuida y auditada.
+  add constraint ck_mov_segregacion check (
+    reversal_of_id is not null
+    or approved_by is null or created_by is null or approved_by <> created_by
+  );
+
+-- Un movimiento solo puede revertirse UNA vez.
+create unique index if not exists ux_mov_reversal_unica
+  on public.inventory_movements (reversal_of_id)
+  where reversal_of_id is not null;
+
+-- Idempotencia real: dos intentos con la misma clave no crean dos movimientos.
+create unique index if not exists ux_mov_idempotency
+  on public.inventory_movements (idempotency_key)
+  where idempotency_key is not null;
+
+comment on column public.inventory_movements.direction is
+  'Sentido del movimiento: +1 suma, -1 resta. Permite AJUSTE negativo sin romper quantity > 0.';
+comment on column public.inventory_movements.reversal_of_id is
+  'Si no es NULL, este movimiento es el contra-asiento que anula al referenciado. El original nunca se edita ni se borra.';
+
+-- -----------------------------------------------------------------------------
+-- A.3 inventory: stock no vendible separado del vendible
+-- -----------------------------------------------------------------------------
+alter table public.inventory
+  add column if not exists qty_damaged    integer not null default 0 check (qty_damaged    >= 0),
+  add column if not exists qty_quarantine integer not null default 0 check (qty_quarantine >= 0);
+
+comment on column public.inventory.qty_damaged is
+  'Recibido con daño. Está en el almacén pero NO es vendible: nunca entra en `quantity` (E-05).';
+
+-- -----------------------------------------------------------------------------
+-- A.4 inventory_items / products: papelera en vez de borrado
+-- -----------------------------------------------------------------------------
+-- Eliminar un artículo con historial rompe el kardex (E-32). Se marca como
+-- eliminado, desaparece del dashboard y solo un JEFE puede restaurarlo.
+alter table public.inventory_items
+  add column if not exists deleted_at timestamptz,
+  add column if not exists deleted_by uuid references public.profiles (id) on delete set null,
+  add column if not exists uom text not null default 'PAR',
+  add column if not exists units_per_box integer check (units_per_box is null or units_per_box > 0),
+  add column if not exists version integer not null default 1;
+
+alter table public.inventory_items
+  drop constraint if exists ck_items_uom;
+alter table public.inventory_items
+  -- En calzado se recibe por caja y se vende por par: confundirlos multiplica
+  -- el stock por 12 (E-29).
+  add constraint ck_items_uom check (uom in ('PAR', 'CAJA', 'UNIDAD'));
+
+alter table public.products
+  add column if not exists deleted_at timestamptz,
+  add column if not exists deleted_by uuid references public.profiles (id) on delete set null;
+
+-- El dashboard filtra por estas columnas en cada consulta.
+create index if not exists ix_items_vivos    on public.inventory_items (id) where deleted_at is null;
+create index if not exists ix_products_vivos on public.products        (id) where deleted_at is null;
+
+-- -----------------------------------------------------------------------------
+-- A.5 inventory_orders: ejecución parcial y documento de respaldo
+-- -----------------------------------------------------------------------------
+alter table public.inventory_orders drop constraint if exists inventory_orders_status_check;
+alter table public.inventory_orders
+  -- Se anunciaron 50 y llegaron 48: la orden no está ni completa ni cancelada (E-23).
+  add constraint inventory_orders_status_check check (
+    status in ('PENDIENTE', 'APROBADO', 'RECHAZADO', 'EJECUTADO',
+               'COMPLETADA_PARCIAL', 'CANCELADO')
+  );
+
+alter table public.inventory_orders
+  -- En Perú la guía de remisión es obligatoria para trasladar mercadería.
+  add column if not exists document_ref text;
+
+
+-- =============================================================================
+--  BLOQUE B — TABLAS NUEVAS
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- B.1 audit_log — quién hizo qué, con valor antes y después
+-- -----------------------------------------------------------------------------
+-- Se alimenta por TRIGGER de base de datos, no desde el frontend: si dependiera
+-- del cliente, bastaría con llamar a la API directamente para dejar de auditar.
+create table if not exists public.audit_log (
+  id          bigserial primary key,
+  table_name  text        not null,
+  record_id   text        not null,
+  action      text        not null check (action in ('INSERT', 'UPDATE', 'DELETE')),
+  old_data    jsonb,
+  new_data    jsonb,
+  changed_by  uuid        references public.profiles (id) on delete set null,
+  changed_at  timestamptz not null default now()
+);
+comment on table public.audit_log is 'Append-only. Responde "quién cambió esto y qué decía antes" (E-38).';
+
+create index if not exists ix_audit_tabla_registro on public.audit_log (table_name, record_id);
+create index if not exists ix_audit_fecha          on public.audit_log (changed_at desc);
+create index if not exists ix_audit_usuario        on public.audit_log (changed_by);
+
+-- -----------------------------------------------------------------------------
+-- B.2 alert_rules — umbrales configurables sin tocar código
+-- -----------------------------------------------------------------------------
+create table if not exists public.alert_rules (
+  id            uuid primary key default gen_random_uuid(),
+  alert_type    text        not null unique,
+  severity      text        not null check (severity in ('CRITICA', 'ADVERTENCIA', 'INFO')),
+  threshold_num numeric,                        -- horas de SLA, % de variación, múltiplo atípico
+  is_enabled    boolean     not null default true,
+  description   text        not null,
+  updated_at    timestamptz not null default now()
+);
+comment on table public.alert_rules is 'El jefe de almacén cambia un SLA sin desplegar código.';
+
+-- -----------------------------------------------------------------------------
+-- B.3 alerts — la alerta como entidad con ciclo de vida y responsable
+-- -----------------------------------------------------------------------------
+create table if not exists public.alerts (
+  id             uuid primary key default gen_random_uuid(),
+  alert_type     text        not null,
+  severity       text        not null check (severity in ('CRITICA', 'ADVERTENCIA', 'INFO')),
+  entity_type    text        not null,          -- 'inventory', 'inventory_movements', 'positions'
+  entity_id      uuid,
+  title          text        not null,
+  detail         text,
+  status         text        not null default 'ACTIVA'
+                 check (status in ('ACTIVA', 'RECONOCIDA', 'RESUELTA')),
+  acknowledged_by uuid       references public.profiles (id) on delete set null,
+  acknowledged_at timestamptz,
+  resolved_at    timestamptz,
+  created_at     timestamptz not null default now(),
+  -- Una alerta reconocida exige saber quién se hizo cargo.
+  constraint ck_alert_reconocida check (
+    (status = 'ACTIVA')
+    or (status = 'RECONOCIDA' and acknowledged_by is not null and acknowledged_at is not null)
+    or (status = 'RESUELTA'   and resolved_at is not null)
+  )
+);
+comment on table public.alerts is 'Nunca se borra. ACTIVA -> RECONOCIDA (alguien se hace cargo) -> RESUELTA (la condición desapareció).';
+
+-- Evita inundar el panel con la misma alerta repetida para la misma entidad.
+create unique index if not exists ux_alerta_activa_unica
+  on public.alerts (alert_type, entity_type, entity_id)
+  where status = 'ACTIVA';
+
+create index if not exists ix_alerts_status_sev on public.alerts (status, severity);
+create index if not exists ix_alerts_created    on public.alerts (created_at desc);
+
+-- -----------------------------------------------------------------------------
+-- B.4 approval_requests — confirmación "de arriba" (maker-checker)
+-- -----------------------------------------------------------------------------
+-- Una acción sensible NO se ejecuta: se encola aquí y un rol superior la
+-- resuelve. El payload guarda lo necesario para ejecutarla al aprobar.
+create table if not exists public.approval_requests (
+  id            uuid primary key default gen_random_uuid(),
+  action_type   text        not null check (action_type in (
+                  'ELIMINAR_ARTICULO', 'REVERTIR_MOVIMIENTO', 'AJUSTE_INVENTARIO',
+                  'CANTIDAD_ATIPICA', 'SOBRANTE_RECEPCION', 'CAMBIO_PRECIO',
+                  'RESTAURAR_REGISTRO')),
+  entity_type   text        not null,
+  entity_id     uuid,
+  payload       jsonb       not null default '{}'::jsonb,
+  reason        text        not null check (length(btrim(reason)) > 0),
+  required_role text        not null default 'JEFE' check (required_role in ('SUPERVISOR', 'JEFE')),
+  status        text        not null default 'PENDIENTE'
+                check (status in ('PENDIENTE', 'APROBADA', 'RECHAZADA')),
+  requested_by  uuid        references public.profiles (id) on delete set null,
+  resolved_by   uuid        references public.profiles (id) on delete set null,
+  resolution_note text,
+  created_at    timestamptz not null default now(),
+  resolved_at   timestamptz,
+  -- Misma segregación que en los movimientos: nadie aprueba su propia solicitud.
+  constraint ck_approval_segregacion check (
+    resolved_by is null or requested_by is null or resolved_by <> requested_by
+  ),
+  constraint ck_approval_resuelta check (
+    (status = 'PENDIENTE' and resolved_at is null)
+    or (status <> 'PENDIENTE' and resolved_at is not null and resolved_by is not null)
+  )
+);
+comment on table public.approval_requests is 'Motivo obligatorio: una autorización sin justificación no es auditable (E-40).';
+
+create index if not exists ix_approval_pendientes on public.approval_requests (required_role, created_at)
+  where status = 'PENDIENTE';
+
+-- -----------------------------------------------------------------------------
+-- B.5 discrepancies — lo esperado contra lo que realmente pasó
+-- -----------------------------------------------------------------------------
+create table if not exists public.discrepancies (
+  id            uuid primary key default gen_random_uuid(),
+  movement_id   uuid        references public.inventory_movements (id) on delete set null,
+  order_id      uuid        references public.inventory_orders (id)    on delete set null,
+  item_id       uuid        not null references public.inventory_items (id) on delete restrict,
+  discrepancy_type text     not null check (discrepancy_type in (
+                    'FALTANTE', 'SOBRANTE', 'SKU_INCORRECTO', 'DANADO', 'POSICION_INCORRECTA')),
+  expected_qty  integer,
+  actual_qty    integer,
+  qty_diff      integer,
+  detail        text,
+  status        text        not null default 'ABIERTA'
+                check (status in ('ABIERTA', 'EN_REVISION', 'RESUELTA')),
+  reported_by   uuid        references public.profiles (id) on delete set null,
+  resolved_by   uuid        references public.profiles (id) on delete set null,
+  resolution    text,
+  created_at    timestamptz not null default now(),
+  resolved_at   timestamptz
+);
+comment on table public.discrepancies is 'El proveedor anunció 50 y entregó 48: la diferencia se registra, no se disimula (E-01/E-02).';
+
+create index if not exists ix_discrep_abiertas on public.discrepancies (status, created_at desc);
+create index if not exists ix_discrep_item     on public.discrepancies (item_id);
+
+-- -----------------------------------------------------------------------------
+-- B.6 inventory_counts — conteo cíclico: cuadrar sistema contra físico
+-- -----------------------------------------------------------------------------
+create table if not exists public.inventory_counts (
+  id           uuid primary key default gen_random_uuid(),
+  warehouse_id uuid        not null references public.warehouses (id) on delete restrict,
+  rack_id      uuid        references public.racks (id) on delete set null,   -- NULL = almacén completo
+  status       text        not null default 'ABIERTO'
+               check (status in ('ABIERTO', 'CONTADO', 'AJUSTADO', 'CANCELADO')),
+  counted_by   uuid        references public.profiles (id) on delete set null,
+  approved_by  uuid        references public.profiles (id) on delete set null,
+  notes        text,
+  created_at   timestamptz not null default now(),
+  counted_at   timestamptz,
+  approved_at  timestamptz
+);
+
+create table if not exists public.inventory_count_lines (
+  id           uuid primary key default gen_random_uuid(),
+  count_id     uuid        not null references public.inventory_counts (id) on delete cascade,
+  item_id      uuid        not null references public.inventory_items (id) on delete restrict,
+  position_id  uuid        references public.positions (id) on delete set null,
+  qty_system   integer     not null check (qty_system >= 0),   -- foto del saldo al momento del conteo
+  qty_physical integer     check (qty_physical is null or qty_physical >= 0),
+  qty_diff     integer generated always as (coalesce(qty_physical, 0) - qty_system) stored,
+  movement_id  uuid        references public.inventory_movements (id) on delete set null,
+  notes        text,
+  constraint uq_count_line unique (count_id, item_id, position_id)
+);
+comment on column public.inventory_count_lines.movement_id is
+  'AJUSTE generado al aprobar la diferencia. Trazabilidad: de la diferencia física al asiento del kardex.';
+
+create index if not exists ix_count_lines_count on public.inventory_count_lines (count_id);
+
+
+-- =============================================================================
+--  BLOQUE C — CAPA 1: PREVENIR
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- C.1 Derivar `direction` del tipo de movimiento
+-- -----------------------------------------------------------------------------
+-- Así el frontend no tiene que acordarse de mandar -1 en una SALIDA: si se
+-- equivoca, el signo lo corrige la base de datos.
+create or replace function public.fn_derivar_direction()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.movement_type = 'ENTRADA' then
+    new.direction := 1;
+  elsif new.movement_type = 'SALIDA' then
+    new.direction := -1;
+  end if;   -- AJUSTE conserva el valor declarado por el operador
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_mov_direction on public.inventory_movements;
+create trigger trg_mov_direction
+  before insert or update of movement_type on public.inventory_movements
+  for each row execute function public.fn_derivar_direction();
+
+-- -----------------------------------------------------------------------------
+-- C.2 Capacidad de la posición
+-- -----------------------------------------------------------------------------
+-- BUG CORREGIDO: `positions.capacity_units` existía pero nadie lo validaba;
+-- se podían asignar 500 pares a un slot con capacidad para 50 (E-12).
+create or replace function public.fn_validar_capacidad_posicion()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_capacidad integer;
+  v_ocupado   integer;
+begin
+  if new.status = 'LIBERADA' then
+    return new;
+  end if;
+
+  select capacity_units into v_capacidad
+    from public.positions where id = new.position_id;
+
+  -- 0 = sin límite declarado
+  if coalesce(v_capacidad, 0) = 0 then
+    return new;
+  end if;
+
+  select coalesce(sum(quantity), 0) into v_ocupado
+    from public.position_assignments
+   where position_id = new.position_id
+     and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+     and id <> coalesce(new.id, '00000000-0000-0000-0000-000000000000'::uuid);
+
+  if v_ocupado + new.quantity > v_capacidad then
+    raise exception 'La posición no tiene espacio: capacidad %, ya ocupadas %, se intenta agregar %',
+      v_capacidad, v_ocupado, new.quantity
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_assign_capacidad on public.position_assignments;
+create trigger trg_assign_capacidad
+  before insert or update on public.position_assignments
+  for each row execute function public.fn_validar_capacidad_posicion();
+
+-- -----------------------------------------------------------------------------
+-- C.3 Inmutabilidad de lo ya ejecutado
+-- -----------------------------------------------------------------------------
+-- Un movimiento ejecutado es un hecho consumado: se corrige con una reversión,
+-- nunca editándolo (E-33). Solo se permite anotar observaciones.
+create or replace function public.fn_bloquear_edicion_ejecutado()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.executed_at is not null then
+    if new.item_id       is distinct from old.item_id
+    or new.quantity      is distinct from old.quantity
+    or new.movement_type is distinct from old.movement_type
+    or new.direction     is distinct from old.direction
+    or new.status        is distinct from old.status
+    or new.executed_at   is distinct from old.executed_at
+    or new.inventory_id  is distinct from old.inventory_id then
+      raise exception 'El movimiento % ya fue ejecutado y no puede modificarse. Para corregirlo, emite una reversión.', old.id
+        using errcode = 'check_violation';
+    end if;
+  end if;
+  new.version := old.version + 1;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_mov_inmutable on public.inventory_movements;
+create trigger trg_mov_inmutable
+  before update on public.inventory_movements
+  for each row execute function public.fn_bloquear_edicion_ejecutado();
+
+-- -----------------------------------------------------------------------------
+-- C.4 Bloqueo optimista en artículos
+-- -----------------------------------------------------------------------------
+-- Dos supervisores editando el mismo artículo: el segundo ya no pisa al primero
+-- en silencio, recibe un error explícito (E-35).
+create or replace function public.fn_bloqueo_optimista_item()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.version is not null and new.version <> old.version then
+    raise exception 'Otra persona modificó este artículo mientras lo editabas. Recarga y vuelve a intentarlo.'
+      using errcode = 'serialization_failure';
+  end if;
+  new.version := old.version + 1;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_items_version on public.inventory_items;
+create trigger trg_items_version
+  before update on public.inventory_items
+  for each row execute function public.fn_bloqueo_optimista_item();
+
+
+-- =============================================================================
+--  BLOQUE D — AUDITORÍA
+-- =============================================================================
+
+-- Usuario actual en Supabase: viene del JWT que PostgREST publica en la sesión.
+-- Con fallback a NULL para que el script también corra desde el SQL Editor.
+create or replace function public.fn_usuario_actual()
+returns uuid
+language plpgsql
+stable
+as $$
+declare v_uid uuid;
+begin
+  begin
+    v_uid := nullif(current_setting('request.jwt.claims', true)::json ->> 'sub', '')::uuid;
+  exception when others then
+    v_uid := null;
+  end;
+  return v_uid;
+end;
+$$;
+
+create or replace function public.fn_auditoria()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.audit_log (table_name, record_id, action, old_data, new_data, changed_by)
+  values (
+    tg_table_name,
+    coalesce(new.id::text, old.id::text),
+    tg_op,
+    case when tg_op in ('UPDATE', 'DELETE') then to_jsonb(old) end,
+    case when tg_op in ('INSERT', 'UPDATE') then to_jsonb(new) end,
+    public.fn_usuario_actual()
+  );
+  return coalesce(new, old);
+end;
+$$;
+
+-- Se audita lo que afecta stock, dinero o autorizaciones.
+drop trigger if exists trg_audit_items      on public.inventory_items;
+create trigger trg_audit_items      after insert or update or delete on public.inventory_items
+  for each row execute function public.fn_auditoria();
+
+drop trigger if exists trg_audit_inventory  on public.inventory;
+create trigger trg_audit_inventory  after insert or update or delete on public.inventory
+  for each row execute function public.fn_auditoria();
+
+drop trigger if exists trg_audit_movements  on public.inventory_movements;
+create trigger trg_audit_movements  after insert or update or delete on public.inventory_movements
+  for each row execute function public.fn_auditoria();
+
+drop trigger if exists trg_audit_orders     on public.inventory_orders;
+create trigger trg_audit_orders     after insert or update or delete on public.inventory_orders
+  for each row execute function public.fn_auditoria();
+
+drop trigger if exists trg_audit_assign     on public.position_assignments;
+create trigger trg_audit_assign     after insert or update or delete on public.position_assignments
+  for each row execute function public.fn_auditoria();
+
+
+-- =============================================================================
+--  BLOQUE E — CAPA 2: DETECTAR (ALERTAS)
+-- =============================================================================
+
+-- Crea la alerta si no hay ya una activa igual; si la condición desapareció,
+-- cierra la que estuviera abierta.
+create or replace function public.fn_emitir_alerta(
+  p_type    text,
+  p_entity_type text,
+  p_entity_id   uuid,
+  p_title   text,
+  p_detail  text default null
+)
+returns void
+language plpgsql
+as $$
+declare
+  v_sev text;
+  v_on  boolean;
+begin
+  select severity, is_enabled into v_sev, v_on
+    from public.alert_rules where alert_type = p_type;
+
+  if coalesce(v_on, true) is false then
+    return;
+  end if;
+
+  insert into public.alerts (alert_type, severity, entity_type, entity_id, title, detail)
+  values (p_type, coalesce(v_sev, 'ADVERTENCIA'), p_entity_type, p_entity_id, p_title, p_detail)
+  on conflict (alert_type, entity_type, entity_id) where status = 'ACTIVA'
+  do nothing;
+end;
+$$;
+
+create or replace function public.fn_cerrar_alerta(
+  p_type text, p_entity_type text, p_entity_id uuid
+)
+returns void
+language plpgsql
+as $$
+begin
+  update public.alerts
+     set status = 'RESUELTA', resolved_at = now()
+   where alert_type = p_type
+     and entity_type = p_entity_type
+     and entity_id = p_entity_id
+     and status in ('ACTIVA', 'RECONOCIDA');
+end;
+$$;
+
+-- Semáforo de stock: se dispara en la BD, no depende de que el dashboard
+-- esté abierto ni de que alguien mire la pantalla (E-13, E-14).
+create or replace function public.fn_alertas_stock()
+returns trigger
+language plpgsql
+as $$
+declare v_sku text;
+begin
+  select sku into v_sku from public.inventory_items where id = new.item_id;
+
+  if new.quantity = 0 then
+    perform public.fn_emitir_alerta('STOCK_AGOTADO', 'inventory', new.id,
+      'Sin stock: ' || coalesce(v_sku, '?'),
+      'El saldo llegó a cero.');
+    perform public.fn_cerrar_alerta('STOCK_BAJO_MINIMO', 'inventory', new.id);
+
+  elsif new.quantity <= new.min_stock then
+    perform public.fn_emitir_alerta('STOCK_BAJO_MINIMO', 'inventory', new.id,
+      'Bajo mínimo: ' || coalesce(v_sku, '?'),
+      format('Stock %s, mínimo %s.', new.quantity, new.min_stock));
+    perform public.fn_cerrar_alerta('STOCK_AGOTADO', 'inventory', new.id);
+
+  else
+    perform public.fn_cerrar_alerta('STOCK_BAJO_MINIMO', 'inventory', new.id);
+    perform public.fn_cerrar_alerta('STOCK_AGOTADO',     'inventory', new.id);
+  end if;
+
+  if new.max_stock is not null and new.quantity > new.max_stock then
+    perform public.fn_emitir_alerta('STOCK_SOBRE_MAXIMO', 'inventory', new.id,
+      'Sobre máximo: ' || coalesce(v_sku, '?'),
+      format('Stock %s, máximo %s.', new.quantity, new.max_stock));
+  else
+    perform public.fn_cerrar_alerta('STOCK_SOBRE_MAXIMO', 'inventory', new.id);
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_inventory_alertas on public.inventory;
+create trigger trg_inventory_alertas
+  after insert or update of quantity, min_stock, max_stock on public.inventory
+  for each row execute function public.fn_alertas_stock();
+
+-- Umbrales por defecto. El jefe los edita desde el dashboard.
+insert into public.alert_rules (alert_type, severity, threshold_num, description) values
+  ('STOCK_BAJO_MINIMO',     'CRITICA',     null, 'El saldo llegó o bajó del mínimo definido.'),
+  ('STOCK_AGOTADO',         'CRITICA',     null, 'Saldo en cero.'),
+  ('STOCK_SOBRE_MAXIMO',    'INFO',        null, 'Saldo por encima del máximo: capital inmovilizado.'),
+  ('DISCREPANCIA_RECEPCION','ADVERTENCIA', null, 'Lo recibido no coincide con lo anunciado.'),
+  ('CANTIDAD_ATIPICA',      'ADVERTENCIA', 5,    'Cantidad supera N veces el promedio histórico del SKU.'),
+  ('APROBACION_VENCIDA',    'ADVERTENCIA', 24,   'Movimiento pendiente de aprobación por más de N horas.'),
+  ('EJECUCION_VENCIDA',     'ADVERTENCIA', 48,   'Movimiento aprobado sin ejecutar por más de N horas.'),
+  ('STOCK_SIN_UBICAR',      'ADVERTENCIA', null, 'Hay stock sin ninguna posición asignada.'),
+  ('POSICION_SOBRECARGADA', 'CRITICA',     null, 'Asignación por encima de la capacidad del slot.'),
+  ('INTENTO_NO_AUTORIZADO', 'ADVERTENCIA', null, 'Acción rechazada por falta de permisos.'),
+  ('VARIACION_PRECIO',      'ADVERTENCIA', 30,   'Precio modificado más de N% respecto al anterior.')
+on conflict (alert_type) do nothing;
+
+-- Variación fuerte de precio: dedazo en el decimal o cambio que alguien debe
+-- revisar (E-28).
+create or replace function public.fn_alerta_precio()
+returns trigger
+language plpgsql
+as $$
+declare v_umbral numeric;
+begin
+  if old.price is null or new.price is null or old.price = 0 then
+    return new;
+  end if;
+
+  select threshold_num into v_umbral from public.alert_rules where alert_type = 'VARIACION_PRECIO';
+
+  if abs(new.price - old.price) / old.price * 100 >= coalesce(v_umbral, 30) then
+    perform public.fn_emitir_alerta('VARIACION_PRECIO', 'inventory_items', new.id,
+      'Cambio de precio inusual: ' || new.sku,
+      format('De %s a %s.', old.price, new.price));
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_items_alerta_precio on public.inventory_items;
+create trigger trg_items_alerta_precio
+  after update of price on public.inventory_items
+  for each row execute function public.fn_alerta_precio();
+
+
+-- =============================================================================
+--  BLOQUE F — WORKFLOW CORREGIDO: APROBAR / EJECUTAR / REVERTIR
+-- =============================================================================
+-- Cambio conceptual respecto a la migración 01: aprobar y ejecutar dejan de ser
+-- el mismo acto, porque en la operación real no lo son. Aprobar COMPROMETE
+-- stock (reserva); ejecutar lo MUEVE físicamente.
+--
+--   ENTRADA  aprobar -> qty_incoming += q      ejecutar -> qty_incoming -= q, quantity += real
+--   SALIDA   aprobar -> qty_reserved += q      ejecutar -> qty_reserved -= q, quantity -= real
+--   AJUSTE   aprobar -> (nada)                 ejecutar -> quantity += q * direction
+--
+-- Esto corrige el bug del esquema base: qty_reserved y qty_incoming existían
+-- pero ninguna función los mantenía, y `ck_inventory_reserved` podía reventar
+-- una salida legítima.
+
+-- -----------------------------------------------------------------------------
+-- F.1 Aprobar
+-- -----------------------------------------------------------------------------
+create or replace function public.fn_aprobar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_mov  public.inventory_movements;
+  v_inv  public.inventory;
+  v_wh   uuid;
+  v_rol  text;
+  v_tope integer;
+  v_disp integer;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.status <> 'PENDIENTE' then
+    raise exception 'Este movimiento ya fue % y no puede aprobarse de nuevo.', lower(v_mov.status);
+  end if;
+
+  -- SEGREGACIÓN DE FUNCIONES (E-30): mensaje explícito antes de que salte el
+  -- constraint, para que el dashboard pueda mostrarlo tal cual.
+  if p_user_id is not null and v_mov.created_by = p_user_id then
+    raise exception 'No puedes aprobar un movimiento que tú mismo creaste. Debe autorizarlo otra persona.';
+  end if;
+
+  -- LÍMITE POR ROL (E-34): sobre el techo, la operación escala en vez de pasar.
+  if p_user_id is not null then
+    select role, max_movement_qty into v_rol, v_tope from public.profiles where id = p_user_id;
+
+    if v_rol = 'OPERARIO' then
+      raise exception 'Tu rol no autoriza aprobaciones. Solicita la autorización a un supervisor.';
+    end if;
+    if v_tope is not null and v_mov.quantity > v_tope then
+      raise exception 'La cantidad (%) supera tu límite de aprobación (%). Debe autorizarlo un jefe.',
+        v_mov.quantity, v_tope;
+    end if;
+  end if;
+
+  select coalesce(o.warehouse_id, inv.warehouse_id) into v_wh
+    from public.inventory_movements m
+    left join public.inventory_orders o on o.id = m.order_id
+    left join public.inventory      inv on inv.id = m.inventory_id
+   where m.id = p_movement_id;
+
+  if v_wh is null then
+    raise exception 'El movimiento no está ligado a una orden ni a un registro de inventario: no se sabe en qué almacén aplicarlo.';
+  end if;
+
+  insert into public.inventory (item_id, warehouse_id, quantity)
+  values (v_mov.item_id, v_wh, 0)
+  on conflict (item_id, warehouse_id) do nothing;
+
+  select * into v_inv from public.inventory
+   where item_id = v_mov.item_id and warehouse_id = v_wh for update;
+
+  -- APROBACIÓN A CIEGAS (E-31): se valida contra el disponible REAL, no contra
+  -- el stock bruto, para no comprometer dos veces la misma mercadería (E-20).
+  if v_mov.movement_type = 'SALIDA' then
+    v_disp := v_inv.quantity - v_inv.qty_reserved;
+    if v_disp < v_mov.quantity then
+      raise exception 'Stock insuficiente: hay % disponibles (% en stock, % ya comprometidos) y se piden %.',
+        v_disp, v_inv.quantity, v_inv.qty_reserved, v_mov.quantity;
+    end if;
+    update public.inventory set qty_reserved = qty_reserved + v_mov.quantity where id = v_inv.id;
+
+  elsif v_mov.movement_type = 'ENTRADA' then
+    update public.inventory set qty_incoming = qty_incoming + v_mov.quantity where id = v_inv.id;
+  end if;
+
+  update public.inventory_movements
+     set status = 'APROBADO', approved_at = now(), approved_by = p_user_id,
+         inventory_id = coalesce(inventory_id, v_inv.id)
+   where id = p_movement_id
+  returning * into v_mov;
+
+  return v_mov;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- F.2 Ejecutar (el operario recibió o retiró físicamente)
+-- -----------------------------------------------------------------------------
+create or replace function public.fn_ejecutar_movimiento(
+  p_movement_id  uuid,
+  p_user_id      uuid    default null,
+  p_cantidad_real integer default null,   -- NULL = llegó/salió exactamente lo aprobado
+  p_quality      text    default 'BUENO'
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_mov   public.inventory_movements;
+  v_inv   public.inventory;
+  v_real  integer;
+  v_delta integer;
+  v_before integer;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.status <> 'APROBADO' then
+    raise exception 'Solo se puede ejecutar un movimiento aprobado (este está %).', lower(v_mov.status);
+  end if;
+  -- DOBLE EJECUCIÓN (E-06): dos operarios recibiendo la misma orden.
+  if v_mov.executed_at is not null then
+    raise exception 'Este movimiento ya fue ejecutado el % y no puede volver a ejecutarse.', v_mov.executed_at;
+  end if;
+
+  v_real := coalesce(p_cantidad_real, v_mov.quantity);
+  if v_real <= 0 then
+    raise exception 'La cantidad ejecutada debe ser mayor que cero.';
+  end if;
+
+  select * into v_inv from public.inventory where id = v_mov.inventory_id for update;
+  if not found then
+    raise exception 'El movimiento no tiene registro de inventario asociado.';
+  end if;
+
+  v_before := v_inv.quantity;
+
+  if v_mov.movement_type = 'ENTRADA' then
+    -- Se libera lo esperado y entra lo realmente recibido.
+    if p_quality = 'BUENO' then
+      update public.inventory
+         set qty_incoming = greatest(qty_incoming - v_mov.quantity, 0),
+             quantity     = quantity + v_real
+       where id = v_inv.id;
+      v_delta := v_real;
+    else
+      -- Mercadería dañada o en cuarentena: entra al almacén pero NO al stock
+      -- vendible (E-05).
+      update public.inventory
+         set qty_incoming    = greatest(qty_incoming - v_mov.quantity, 0),
+             qty_damaged     = qty_damaged    + case when p_quality = 'DANADO'     then v_real else 0 end,
+             qty_quarantine  = qty_quarantine + case when p_quality = 'CUARENTENA' then v_real else 0 end
+       where id = v_inv.id;
+      v_delta := 0;
+    end if;
+
+  elsif v_mov.movement_type = 'SALIDA' then
+    if v_inv.quantity < v_real then
+      raise exception 'No se puede retirar %: solo hay % en stock.', v_real, v_inv.quantity;
+    end if;
+    -- Se libera la reserva y se descuenta el stock en la MISMA sentencia: es lo
+    -- que evita que el constraint qty_reserved <= quantity reviente a mitad.
+    update public.inventory
+       set qty_reserved = greatest(qty_reserved - v_mov.quantity, 0),
+           quantity     = quantity - v_real
+     where id = v_inv.id;
+    v_delta := -v_real;
+
+  else  -- AJUSTE: el signo lo da direction (permite corregir a la baja)
+    v_delta := v_real * v_mov.direction;
+    if v_inv.quantity + v_delta < 0 then
+      raise exception 'El ajuste dejaría el stock en negativo (hay %, se ajusta %).', v_inv.quantity, v_delta;
+    end if;
+    update public.inventory set quantity = quantity + v_delta where id = v_inv.id;
+  end if;
+
+  if v_delta <> 0 then
+    insert into public.stock_ledger (movement_id, item_id, warehouse_id, position_id,
+                                     qty_delta, qty_before, qty_after, executed_by)
+    values (v_mov.id, v_mov.item_id, v_inv.warehouse_id, v_mov.position_id,
+            v_delta, v_before, v_before + v_delta, p_user_id);
+  end if;
+
+  -- DISCREPANCIA (E-01/E-02/E-18): lo esperado no fue lo que pasó.
+  if v_real <> v_mov.quantity then
+    insert into public.discrepancies (movement_id, order_id, item_id, discrepancy_type,
+                                      expected_qty, actual_qty, qty_diff, detail, reported_by)
+    values (v_mov.id, v_mov.order_id, v_mov.item_id,
+            case when v_real < v_mov.quantity then 'FALTANTE' else 'SOBRANTE' end,
+            v_mov.quantity, v_real, v_real - v_mov.quantity,
+            'Diferencia detectada al ejecutar el movimiento.', p_user_id);
+
+    perform public.fn_emitir_alerta('DISCREPANCIA_RECEPCION', 'inventory_movements', v_mov.id,
+      'Diferencia entre lo esperado y lo ejecutado',
+      format('Esperado %s, real %s.', v_mov.quantity, v_real));
+  end if;
+
+  if p_quality <> 'BUENO' then
+    insert into public.discrepancies (movement_id, order_id, item_id, discrepancy_type,
+                                      expected_qty, actual_qty, qty_diff, detail, reported_by)
+    values (v_mov.id, v_mov.order_id, v_mov.item_id, 'DANADO',
+            v_mov.quantity, v_real, 0,
+            format('Mercadería recibida con estado %s.', p_quality), p_user_id);
+  end if;
+
+  update public.inventory_movements
+     set executed_at = now(), executed_by = p_user_id,
+         expected_quantity = v_mov.quantity,
+         quality_status = p_quality
+   where id = v_mov.id
+  returning * into v_mov;
+
+  return v_mov;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- F.3 Rechazar (libera lo que se hubiera comprometido)
+-- -----------------------------------------------------------------------------
+create or replace function public.fn_rechazar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null,
+  p_motivo      text default null
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_mov public.inventory_movements;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.executed_at is not null then
+    raise exception 'No se puede rechazar un movimiento ya ejecutado. Usa una reversión.';
+  end if;
+  if v_mov.status = 'RECHAZADO' then
+    raise exception 'Este movimiento ya estaba rechazado.';
+  end if;
+
+  -- Si estaba aprobado, hay stock comprometido que hay que devolver.
+  if v_mov.status = 'APROBADO' and v_mov.inventory_id is not null then
+    if v_mov.movement_type = 'SALIDA' then
+      update public.inventory set qty_reserved = greatest(qty_reserved - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    elsif v_mov.movement_type = 'ENTRADA' then
+      update public.inventory set qty_incoming = greatest(qty_incoming - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    end if;
+  end if;
+
+  update public.inventory_movements
+     set status = 'RECHAZADO', approved_at = now(), approved_by = p_user_id,
+         notes = concat_ws(' | ', notes, coalesce(p_motivo, 'Rechazado'))
+   where id = p_movement_id
+  returning * into v_mov;
+
+  return v_mov;   -- el stock nunca se tocó, por diseño
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- F.4 Revertir un movimiento YA EJECUTADO (el "reroll")
+-- -----------------------------------------------------------------------------
+-- No edita ni borra: emite el contra-asiento que lo anula, deja ambos ligados y
+-- conserva la evidencia de quién se equivocó y quién autorizó la corrección.
+create or replace function public.fn_revertir_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid,
+  p_motivo      text
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_orig  public.inventory_movements;
+  v_nueva public.inventory_movements;
+  v_rol   text;
+  v_tipo  text;
+  v_dir   smallint;
+begin
+  if p_motivo is null or length(btrim(p_motivo)) = 0 then
+    raise exception 'La reversión exige un motivo: sin justificación no es auditable.';
+  end if;
+
+  select role into v_rol from public.profiles where id = p_user_id;
+  if v_rol is distinct from 'JEFE' then
+    raise exception 'Solo un jefe puede revertir un movimiento ya ejecutado.';
+  end if;
+
+  select * into v_orig from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_orig.executed_at is null then
+    raise exception 'Este movimiento no se ejecutó: no hay nada que revertir (recházalo o cancélalo).';
+  end if;
+  if v_orig.reversal_of_id is not null then
+    raise exception 'Una reversión no se revierte. Emite el movimiento original nuevamente.';
+  end if;
+  if exists (select 1 from public.inventory_movements where reversal_of_id = p_movement_id) then
+    raise exception 'Este movimiento ya fue revertido.';
+  end if;
+
+  -- El contra-asiento invierte el sentido del original.
+  if v_orig.movement_type = 'ENTRADA' then
+    v_tipo := 'SALIDA';  v_dir := -1;
+  elsif v_orig.movement_type = 'SALIDA' then
+    v_tipo := 'ENTRADA'; v_dir := 1;
+  else
+    v_tipo := 'AJUSTE';  v_dir := (v_orig.direction * -1)::smallint;
+  end if;
+
+  insert into public.inventory_movements (
+    order_id, item_id, inventory_id, position_id, movement_type, direction,
+    quantity, reason, status, notes, created_by, approved_by, approved_at,
+    reversal_of_id
+  ) values (
+    v_orig.order_id, v_orig.item_id, v_orig.inventory_id, v_orig.position_id,
+    v_tipo, v_dir, v_orig.quantity,
+    'Reversión de movimiento ' || v_orig.id::text,
+    'APROBADO', p_motivo, p_user_id, p_user_id, now(),
+    v_orig.id
+  ) returning * into v_nueva;
+
+  -- La reversión se ejecuta de inmediato: el error ya ocurrió en el mundo físico
+  -- y el stock del sistema debe volver a reflejarlo sin esperar otro turno.
+  -- Aquí created_by = approved_by a propósito (el jefe emite y autoriza su
+  -- propia corrección); ck_mov_segregacion exceptúa este caso por reversal_of_id.
+  v_nueva := public.fn_ejecutar_movimiento(v_nueva.id, p_user_id, v_orig.quantity, 'BUENO');
+
+  return v_nueva;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- F.5 Compatibilidad: aprobar + ejecutar en un solo paso
+-- -----------------------------------------------------------------------------
+-- El README pide que "aprobar actualice el stock". En la operación real son dos
+-- actos distintos, pero este wrapper conserva el flujo simple para los casos en
+-- que quien aprueba es también quien confirma la ejecución.
+create or replace function public.fn_aprobar_y_ejecutar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid    default null,
+  p_ejecutar    boolean default true
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_mov public.inventory_movements;
+begin
+  v_mov := public.fn_aprobar_movimiento(p_movement_id, p_user_id);
+  if p_ejecutar then
+    v_mov := public.fn_ejecutar_movimiento(p_movement_id, p_user_id, null, 'BUENO');
+  end if;
+  return v_mov;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE G — CAPA 3: APROBACIONES ESCALADAS Y PAPELERA
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- G.1 Solicitar autorización "de arriba"
+-- -----------------------------------------------------------------------------
+create or replace function public.fn_solicitar_aprobacion(
+  p_action_type text,
+  p_entity_type text,
+  p_entity_id   uuid,
+  p_reason      text,
+  p_user_id     uuid default null,
+  p_payload     jsonb default '{}'::jsonb
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_req public.approval_requests;
+begin
+  insert into public.approval_requests (action_type, entity_type, entity_id, payload,
+                                        reason, requested_by)
+  values (p_action_type, p_entity_type, p_entity_id, p_payload, p_reason, p_user_id)
+  returning * into v_req;
+  return v_req;
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- G.2 Eliminar un artículo: nunca directo, siempre con autorización
+-- -----------------------------------------------------------------------------
+-- Si el artículo tiene historial, ni siquiera el jefe lo borra físicamente: se
+-- manda a la papelera. El kardex debe seguir cuadrando dentro de diez años.
+create or replace function public.fn_eliminar_articulo(
+  p_item_id uuid,
+  p_user_id uuid,
+  p_motivo  text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_rol       text;
+  v_tiene_mov boolean;
+  v_stock     integer;
+  v_req       public.approval_requests;
+begin
+  if p_motivo is null or length(btrim(p_motivo)) = 0 then
+    raise exception 'Indica el motivo de la eliminación.';
+  end if;
+
+  select role into v_rol from public.profiles where id = p_user_id;
+
+  select exists (select 1 from public.inventory_movements where item_id = p_item_id)
+    into v_tiene_mov;
+  select coalesce(sum(quantity), 0) into v_stock
+    from public.inventory where item_id = p_item_id;
+
+  -- Un artículo con stock físico no se elimina: primero hay que sacarlo.
+  if v_stock > 0 then
+    raise exception 'No se puede eliminar: el artículo todavía tiene % unidades en stock. Regístralas como salida o ajuste primero.', v_stock;
+  end if;
+
+  -- Sin rango de jefe, la eliminación se encola para autorización (E-32).
+  if v_rol is distinct from 'JEFE' then
+    v_req := public.fn_solicitar_aprobacion(
+      'ELIMINAR_ARTICULO', 'inventory_items', p_item_id, p_motivo, p_user_id,
+      jsonb_build_object('tiene_movimientos', v_tiene_mov)
+    );
+    return jsonb_build_object(
+      'estado', 'PENDIENTE_APROBACION',
+      'solicitud_id', v_req.id,
+      'mensaje', 'La eliminación quedó pendiente de autorización de un jefe.'
+    );
+  end if;
+
+  update public.inventory_items
+     set deleted_at = now(), deleted_by = p_user_id, is_active = false
+   where id = p_item_id;
+
+  return jsonb_build_object(
+    'estado', 'ELIMINADO',
+    'mensaje', 'Artículo enviado a la papelera. Su historial se conserva y puede restaurarse.'
+  );
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
+-- G.3 Resolver una solicitud escalada
+-- -----------------------------------------------------------------------------
+create or replace function public.fn_resolver_aprobacion(
+  p_request_id uuid,
+  p_user_id    uuid,
+  p_aprobar    boolean,
+  p_nota       text default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_req public.approval_requests;
+  v_rol text;
+begin
+  select * into v_req from public.approval_requests where id = p_request_id for update;
+  if not found then
+    raise exception 'La solicitud no existe.';
+  end if;
+  if v_req.status <> 'PENDIENTE' then
+    raise exception 'Esta solicitud ya fue %.', lower(v_req.status);
+  end if;
+  if v_req.requested_by = p_user_id then
+    raise exception 'No puedes resolver una solicitud que tú mismo pediste.';
+  end if;
+
+  select role into v_rol from public.profiles where id = p_user_id;
+  if v_req.required_role = 'JEFE' and v_rol is distinct from 'JEFE' then
+    perform public.fn_emitir_alerta('INTENTO_NO_AUTORIZADO', 'approval_requests', p_request_id,
+      'Intento de resolver una solicitud sin rango suficiente', null);
+    raise exception 'Esta solicitud requiere autorización de un jefe.';
+  end if;
+
+  if p_aprobar then
+    -- Ejecuta la acción que quedó congelada esperando el visto bueno.
+    case v_req.action_type
+      when 'ELIMINAR_ARTICULO' then
+        update public.inventory_items
+           set deleted_at = now(), deleted_by = p_user_id, is_active = false
+         where id = v_req.entity_id;
+      when 'RESTAURAR_REGISTRO' then
+        update public.inventory_items
+           set deleted_at = null, deleted_by = null, is_active = true
+         where id = v_req.entity_id;
+      else
+        null;   -- las demás las ejecuta su propia RPC tras la aprobación
+    end case;
+  end if;
+
+  update public.approval_requests
+     set status = case when p_aprobar then 'APROBADA' else 'RECHAZADA' end,
+         resolved_by = p_user_id, resolved_at = now(), resolution_note = p_nota
+   where id = p_request_id
+  returning * into v_req;
+
+  return v_req;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE H — VISTAS PARA EL PANEL DE CONTROL
+-- =============================================================================
+
+-- H.1 Bandeja de alertas activas, ya ordenada por urgencia.
+create or replace view public.v_alertas_activas as
+select
+  a.id, a.alert_type, a.severity, a.title, a.detail,
+  a.entity_type, a.entity_id, a.status, a.created_at,
+  extract(epoch from (now() - a.created_at)) / 3600 as horas_abierta
+from public.alerts a
+where a.status in ('ACTIVA', 'RECONOCIDA')
+order by
+  case a.severity when 'CRITICA' then 1 when 'ADVERTENCIA' then 2 else 3 end,
+  a.created_at desc;
+
+-- H.2 Colas de trabajo vencidas: lo que nadie aprobó ni ejecutó a tiempo
+-- (E-36, E-37). Es la consulta que responde "¿qué está trabado?".
+create or replace view public.v_movimientos_vencidos as
+select
+  m.id, m.movement_type, m.quantity, m.status,
+  it.sku, p.name as producto,
+  case when m.status = 'PENDIENTE' then 'APROBACION_VENCIDA' else 'EJECUCION_VENCIDA' end as tipo_atraso,
+  coalesce(m.approved_at, m.created_at) as desde,
+  round(extract(epoch from (now() - coalesce(m.approved_at, m.created_at))) / 3600, 1) as horas
+from public.inventory_movements m
+join public.inventory_items it on it.id = m.item_id
+join public.products        p  on p.id  = it.product_id
+where (m.status = 'PENDIENTE'
+       and m.created_at < now() - (select coalesce(threshold_num, 24) from public.alert_rules where alert_type = 'APROBACION_VENCIDA') * interval '1 hour')
+   or (m.status = 'APROBADO' and m.executed_at is null
+       and m.approved_at < now() - (select coalesce(threshold_num, 48) from public.alert_rules where alert_type = 'EJECUCION_VENCIDA') * interval '1 hour');
+
+-- H.3 Stock sin ubicar: existe en el saldo pero no está en ninguna posición (E-09).
+create or replace view public.v_stock_sin_ubicar as
+select
+  inv.id as inventory_id, it.sku, p.name as producto, it.size_label as talla,
+  w.name as almacen, inv.quantity
+from public.inventory inv
+join public.inventory_items it on it.id = inv.item_id
+join public.products        p  on p.id  = it.product_id
+join public.warehouses      w  on w.id  = inv.warehouse_id
+where inv.quantity > 0
+  and not exists (
+    select 1 from public.position_assignments pa
+     where pa.item_id = inv.item_id
+       and pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+  );
+
+-- H.4 Trazabilidad completa de un movimiento, con su reversión si la tuvo.
+create or replace view public.v_movimientos_detalle as
+select
+  m.id, m.created_at, m.approved_at, m.executed_at,
+  it.sku, p.name as producto, it.size_label as talla,
+  m.movement_type, m.direction, m.quantity, m.expected_quantity,
+  m.quality_status, m.status,
+  case
+    when m.reversal_of_id is not null           then 'REVERSION'
+    when r.id is not null                       then 'REVERTIDO'
+    when m.executed_at is not null              then 'EJECUTADO'
+    when m.status = 'APROBADO'                  then 'APROBADO_SIN_EJECUTAR'
+    else m.status
+  end                                as situacion,
+  m.reversal_of_id,
+  r.id                               as revertido_por,
+  m.reason, m.notes,
+  cb.full_name                       as creado_por,
+  ab.full_name                       as aprobado_por,
+  eb.full_name                       as ejecutado_por
+from public.inventory_movements m
+join public.inventory_items it on it.id = m.item_id
+join public.products        p  on p.id  = it.product_id
+left join public.inventory_movements r on r.reversal_of_id = m.id
+left join public.profiles  cb on cb.id = m.created_by
+left join public.profiles  ab on ab.id = m.approved_by
+left join public.profiles  eb on eb.id = m.executed_by;
+
+
+-- =============================================================================
+--  FASE 2 (SIGUIENTE): RLS
+-- =============================================================================
+-- La matriz de roles de docs/ANALISIS-OPERATIVO.md §1 se traduce directo a
+-- políticas:
+--   OPERARIO   : SELECT del catálogo y su cola; ejecutar (nunca aprobar)
+--   SUPERVISOR : crear órdenes y movimientos, aprobar dentro de su límite
+--   JEFE       : todo, incluidas reversiones y resolución de escalamientos
+--   AUDITOR    : SELECT global, incluido audit_log; ningún write
+-- Las funciones de este archivo ya son SECURITY DEFINER con search_path fijo,
+-- que es lo que permite que un OPERARIO ejecute un movimiento sin darle permiso
+-- directo de UPDATE sobre la tabla inventory.
+-- =============================================================================
+
+
+-- =============================================================================
+--  MIGRACIÓN 03 — SEGURIDAD: RLS, API PÚBLICA Y PERMISOS
+--
+--  Traduce la matriz de roles de docs/ANALISIS-OPERATIVO.md §1 a políticas de
+--  base de datos, y cierra tres agujeros que las migraciones anteriores dejaban:
+--
+--    1. Las RPC recibían `p_user_id` como parámetro y confiaban en él: un
+--       cliente podía pasar el UUID del jefe y aprobar en su nombre.
+--    2. Las vistas se ejecutan con los permisos de su dueño y por lo tanto
+--       SALTAN el RLS de las tablas base.
+--    3. profiles.id no estaba enlazado a auth.users, así que auth.uid() no
+--       correspondía con ningún perfil.
+--
+--  Principio de diseño: el stock NO se modifica nunca por UPDATE directo del
+--  cliente. Ninguna tabla de saldo tiene política de escritura. La única vía es
+--  el workflow, y el workflow vive en funciones SECURITY DEFINER auditadas.
+--
+--  Requiere 01 y 02. Idempotente.
+-- =============================================================================
+
+
+-- =============================================================================
+--  BLOQUE A — QUIÉN ES QUIEN PREGUNTA
+-- =============================================================================
+
+-- SECURITY DEFINER a propósito: si esta función consultara `profiles` con RLS
+-- activo desde dentro de una política SOBRE profiles, Postgres entraría en
+-- recursión infinita ("infinite recursion detected in policy"). Al ejecutarse
+-- como su dueño, la lectura interna no evalúa políticas.
+-- STABLE (no VOLATILE) para que el planificador la evalúe una vez por consulta
+-- y no una vez por fila.
+create or replace function public.fn_rol_actual()
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.role
+    from public.profiles p
+   where p.id = auth.uid()
+     and p.is_active;
+$$;
+
+comment on function public.fn_rol_actual is
+  'Rol del usuario autenticado, o NULL si no tiene perfil o está desactivado. Un NULL no matchea ninguna política: sin perfil no se ve nada.';
+
+-- Atajo legible para las políticas de escritura.
+create or replace function public.fn_es_al_menos_supervisor()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select (select public.fn_rol_actual()) in ('SUPERVISOR', 'JEFE');
+$$;
+
+create or replace function public.fn_es_jefe()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.fn_rol_actual() = 'JEFE';
+$$;
+
+-- Guarda de rol para la API pública. Es necesaria porque las funciones fn_* de
+-- la migración 02 solo comprobaban que quien aprueba no fuera OPERARIO: un
+-- AUDITOR (rol de solo lectura) las habría pasado sin problema. Aquí se declara
+-- explícitamente qué roles admite cada operación.
+create or replace function public.fn_exigir_rol(variadic p_roles text[])
+returns text
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare v_rol text;
+begin
+  v_rol := public.fn_rol_actual();
+  if v_rol is null then
+    raise exception 'No tienes un perfil activo en el sistema. Contacta al jefe de almacén.'
+      using errcode = 'insufficient_privilege';
+  end if;
+  if not (v_rol = any (p_roles)) then
+    raise exception 'Tu rol (%) no autoriza esta operación.', v_rol
+      using errcode = 'insufficient_privilege';
+  end if;
+  return v_rol;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE B — API PÚBLICA: LAS FUNCIONES QUE SÍ PUEDE LLAMAR EL FRONTEND
+-- =============================================================================
+--  AGUJERO CERRADO: las funciones fn_* aceptan `p_user_id` y confían en él.
+--  En vez de reescribirlas (y arriesgar introducir errores en lógica ya
+--  probada), se las saca del alcance del cliente y se exponen wrappers que
+--  derivan el actor de la sesión con auth.uid(). El parámetro deja de existir
+--  en la superficie pública, así que la suplantación es imposible por
+--  construcción, no por validación.
+--
+--  Las fn_* siguen disponibles para el SQL Editor, el seed y los tests, donde
+--  quien las ejecuta es el rol postgres y auth.uid() es NULL.
+--
+--  Convención: `fn_*` = interno.  Sin prefijo = API del frontend.
+
+create or replace function public.actor_actual()
+returns uuid
+language plpgsql
+stable
+set search_path = public
+as $$
+declare v_uid uuid;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'No hay sesión activa. Inicia sesión para realizar esta operación.'
+      using errcode = 'insufficient_privilege';
+  end if;
+  return v_uid;
+end;
+$$;
+
+create or replace function public.aprobar_movimiento(p_movement_id uuid)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  return public.fn_aprobar_movimiento(p_movement_id, public.actor_actual());
+end;
+$$;
+
+create or replace function public.ejecutar_movimiento(
+  p_movement_id   uuid,
+  p_cantidad_real integer default null,
+  p_quality       text    default 'BUENO'
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- El operario SÍ ejecuta: recibir y retirar físicamente es su trabajo.
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+  return public.fn_ejecutar_movimiento(p_movement_id, public.actor_actual(), p_cantidad_real, p_quality);
+end;
+$$;
+
+create or replace function public.rechazar_movimiento(
+  p_movement_id uuid,
+  p_motivo      text default null
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  return public.fn_rechazar_movimiento(p_movement_id, public.actor_actual(), p_motivo);
+end;
+$$;
+
+create or replace function public.revertir_movimiento(
+  p_movement_id uuid,
+  p_motivo      text
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.fn_exigir_rol('JEFE');
+  return public.fn_revertir_movimiento(p_movement_id, public.actor_actual(), p_motivo);
+end;
+$$;
+
+create or replace function public.eliminar_articulo(
+  p_item_id uuid,
+  p_motivo  text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- El supervisor puede pedirlo; fn_eliminar_articulo decide si lo ejecuta
+  -- directamente (JEFE) o lo encola en approval_requests.
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  return public.fn_eliminar_articulo(p_item_id, public.actor_actual(), p_motivo);
+end;
+$$;
+
+create or replace function public.solicitar_aprobacion(
+  p_action_type text,
+  p_entity_type text,
+  p_entity_id   uuid,
+  p_reason      text,
+  p_payload     jsonb default '{}'::jsonb
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+  return public.fn_solicitar_aprobacion(p_action_type, p_entity_type, p_entity_id,
+                                        p_reason, public.actor_actual(), p_payload);
+end;
+$$;
+
+create or replace function public.resolver_aprobacion(
+  p_request_id uuid,
+  p_aprobar    boolean,
+  p_nota       text default null
+)
+returns public.approval_requests
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- fn_resolver_aprobacion vuelve a comprobar que quien resuelve tenga el rango
+  -- que la solicitud exige; aquí solo se descarta de entrada al AUDITOR.
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  return public.fn_resolver_aprobacion(p_request_id, public.actor_actual(), p_aprobar, p_nota);
+end;
+$$;
+
+-- Reconocer una alerta: "yo me hago cargo de esto". Se expone como función y no
+-- como UPDATE directo porque una política RLS no puede impedir que, de paso, se
+-- cambie la severidad o el tipo de la alerta.
+create or replace function public.reconocer_alerta(p_alert_id uuid)
+returns public.alerts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_alerta public.alerts;
+begin
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+  update public.alerts
+     set status = 'RECONOCIDA',
+         acknowledged_by = public.actor_actual(),
+         acknowledged_at = now()
+   where id = p_alert_id
+     and status = 'ACTIVA'
+  returning * into v_alerta;
+
+  if not found then
+    raise exception 'La alerta no existe o ya fue atendida.';
+  end if;
+  return v_alerta;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE C — VISTAS QUE RESPETAN RLS
+-- =============================================================================
+--  AGUJERO CERRADO: por defecto una vista se ejecuta con los privilegios de su
+--  dueño (postgres), que tiene BYPASSRLS. Sin security_invoker, consultar
+--  v_stock_actual devolvería TODO aunque las tablas base estén protegidas.
+--  Con security_invoker = on, la vista se evalúa con los permisos de quien la
+--  consulta y las políticas de las tablas base sí se aplican.
+
+-- security_invoker existe desde PostgreSQL 15. Si la migración corriera en una
+-- versión anterior, fallaría justo aquí: con las funciones públicas ya creadas
+-- (bloque B) pero antes de activar RLS (bloque D), que es el peor estado
+-- posible. Se comprueba antes y se detiene con un mensaje que explica por qué.
+do $$
+begin
+  if current_setting('server_version_num')::integer < 150000 then
+    raise exception
+      'Esta migración necesita PostgreSQL 15 o superior (detectado %). Sin security_invoker las vistas se ejecutan con los permisos de su dueño y devolverían todas las filas ignorando RLS, así que activar las políticas daría una falsa sensación de seguridad.',
+      current_setting('server_version');
+  end if;
+end;
+$$;
+
+alter view public.v_items_detalle       set (security_invoker = on);
+alter view public.v_stock_actual        set (security_invoker = on);
+alter view public.v_mapa_almacen        set (security_invoker = on);
+alter view public.v_alertas_activas     set (security_invoker = on);
+alter view public.v_movimientos_vencidos set (security_invoker = on);
+alter view public.v_stock_sin_ubicar    set (security_invoker = on);
+alter view public.v_movimientos_detalle set (security_invoker = on);
+
+-- RLS filtra FILAS, no COLUMNAS: no existe forma de decir "este rol ve todo
+-- menos el costo". La restricción por columna se resuelve con una vista que
+-- simplemente no expone precio ni costo, y el frontend consulta esta cuando
+-- quien mira es un OPERARIO.
+create or replace view public.v_catalogo_operativo
+with (security_invoker = on) as
+select
+  it.id           as item_id,
+  it.sku,
+  p.model_code,
+  p.name          as producto,
+  b.name          as marca,
+  c.name          as categoria,
+  it.size_label   as talla,
+  it.uom,
+  it.units_per_box,
+  it.barcode,
+  it.is_active
+from public.inventory_items it
+join public.products   p on p.id = it.product_id
+left join public.brands     b on b.id = p.brand_id
+left join public.categories c on c.id = p.category_id
+where it.deleted_at is null
+  and p.deleted_at is null;   -- dar de baja el modelo debe ocultar sus tallas
+
+comment on view public.v_catalogo_operativo is
+  'Catálogo sin precio ni costo, para el rol OPERARIO. RLS no filtra columnas; esta vista es la forma correcta de resolverlo.';
+
+
+-- =============================================================================
+--  BLOQUE D — ACTIVAR RLS EN LAS 21 TABLAS
+-- =============================================================================
+alter table public.profiles              enable row level security;
+alter table public.brands                enable row level security;
+alter table public.categories            enable row level security;
+alter table public.suppliers             enable row level security;
+alter table public.warehouses            enable row level security;
+alter table public.racks                 enable row level security;
+alter table public.positions             enable row level security;
+alter table public.products              enable row level security;
+alter table public.inventory_items       enable row level security;
+alter table public.inventory             enable row level security;
+alter table public.position_assignments  enable row level security;
+alter table public.inventory_orders      enable row level security;
+alter table public.inventory_movements   enable row level security;
+alter table public.stock_ledger          enable row level security;
+alter table public.audit_log             enable row level security;
+alter table public.alert_rules           enable row level security;
+alter table public.alerts                enable row level security;
+alter table public.approval_requests     enable row level security;
+alter table public.discrepancies         enable row level security;
+alter table public.inventory_counts      enable row level security;
+alter table public.inventory_count_lines enable row level security;
+
+
+-- =============================================================================
+--  BLOQUE E — POLÍTICAS
+-- =============================================================================
+-- Regla transversal: NINGUNA tabla tiene política de DELETE. En este sistema
+-- nada se borra físicamente desde la aplicación — los maestros usan deleted_at
+-- y los movimientos se anulan con un contra-asiento. Sin política de DELETE,
+-- el DELETE queda prohibido para todos, incluido el JEFE.
+
+-- -----------------------------------------------------------------------------
+-- E.1 profiles — todos ven quién es quién; solo el jefe administra
+-- -----------------------------------------------------------------------------
+-- El SELECT abierto es necesario: el dashboard muestra "aprobado por Ana Jefa"
+-- y necesita resolver el nombre. No hay datos sensibles más allá del correo.
+drop policy if exists p_profiles_select on public.profiles;
+create policy p_profiles_select on public.profiles
+  for select to authenticated
+  using ((select public.fn_rol_actual()) is not null);
+
+drop policy if exists p_profiles_insert on public.profiles;
+create policy p_profiles_insert on public.profiles
+  for insert to authenticated
+  with check ((select public.fn_es_jefe()));
+
+-- El jefe administra a todos; cualquiera puede corregir su propio nombre.
+-- Nota: RLS no impide que, al editar su fila, un usuario se cambie el `role`.
+-- Eso lo bloquea el trigger trg_profiles_no_autoascenso, más abajo.
+drop policy if exists p_profiles_update on public.profiles;
+create policy p_profiles_update on public.profiles
+  for update to authenticated
+  using ((select public.fn_es_jefe()) or id = (select auth.uid()))
+  with check ((select public.fn_es_jefe()) or id = (select auth.uid()));
+
+-- -----------------------------------------------------------------------------
+-- E.2 Catálogos: marcas, categorías, proveedores
+-- -----------------------------------------------------------------------------
+drop policy if exists p_brands_select on public.brands;
+create policy p_brands_select on public.brands
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_brands_write on public.brands;
+create policy p_brands_write on public.brands
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_brands_update on public.brands;
+create policy p_brands_update on public.brands
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_categories_select on public.categories;
+create policy p_categories_select on public.categories
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_categories_write on public.categories;
+create policy p_categories_write on public.categories
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_categories_update on public.categories;
+create policy p_categories_update on public.categories
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_suppliers_select on public.suppliers;
+create policy p_suppliers_select on public.suppliers
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_suppliers_write on public.suppliers;
+create policy p_suppliers_write on public.suppliers
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_suppliers_update on public.suppliers;
+create policy p_suppliers_update on public.suppliers
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- -----------------------------------------------------------------------------
+-- E.3 Mapa del almacén: warehouses, racks, positions
+-- -----------------------------------------------------------------------------
+-- El operario necesita LEER el mapa (tiene que saber dónde ubicar), pero no
+-- redefinir la topología del almacén.
+drop policy if exists p_warehouses_select on public.warehouses;
+create policy p_warehouses_select on public.warehouses
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_warehouses_write on public.warehouses;
+create policy p_warehouses_write on public.warehouses
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_warehouses_update on public.warehouses;
+create policy p_warehouses_update on public.warehouses
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_racks_select on public.racks;
+create policy p_racks_select on public.racks
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_racks_write on public.racks;
+create policy p_racks_write on public.racks
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_racks_update on public.racks;
+create policy p_racks_update on public.racks
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_positions_select on public.positions;
+create policy p_positions_select on public.positions
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_positions_write on public.positions;
+create policy p_positions_write on public.positions
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_positions_update on public.positions;
+create policy p_positions_update on public.positions
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- -----------------------------------------------------------------------------
+-- E.4 Maestro de productos y artículos
+-- -----------------------------------------------------------------------------
+-- El OPERARIO ve el catálogo completo aquí, incluidos precio y costo. Para
+-- ocultárselos, el frontend debe consultar v_catalogo_operativo en vez de la
+-- tabla. Se documenta como decisión consciente: cerrar el SELECT de la tabla
+-- al operario le impediría también ver el nombre del producto que va a mover.
+-- La papelera no es visible para el trabajo diario: un producto con deleted_at
+-- no debe aparecer en buscadores ni selectores. Solo JEFE (que puede restaurar)
+-- y AUDITOR (que revisa el histórico) ven lo eliminado. Sin este filtro, el
+-- borrado lógico dependería de que cada consulta del frontend se acuerde de
+-- excluirlo, y bastaría una que lo olvide para anular el control.
+drop policy if exists p_products_select on public.products;
+create policy p_products_select on public.products
+  for select to authenticated
+  using (
+    (select public.fn_rol_actual()) is not null
+    and (deleted_at is null or (select public.fn_rol_actual()) in ('JEFE', 'AUDITOR'))
+  );
+drop policy if exists p_products_write on public.products;
+create policy p_products_write on public.products
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_products_update on public.products;
+create policy p_products_update on public.products
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_items_select on public.inventory_items;
+create policy p_items_select on public.inventory_items
+  for select to authenticated
+  using (
+    (select public.fn_rol_actual()) is not null
+    and (deleted_at is null or (select public.fn_rol_actual()) in ('JEFE', 'AUDITOR'))
+  );
+drop policy if exists p_items_write on public.inventory_items;
+create policy p_items_write on public.inventory_items
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_items_update on public.inventory_items;
+create policy p_items_update on public.inventory_items
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- -----------------------------------------------------------------------------
+-- E.5 inventory — SOLO LECTURA PARA TODOS
+-- -----------------------------------------------------------------------------
+-- La decisión de seguridad más importante del archivo: el saldo de stock NO
+-- tiene política de INSERT ni de UPDATE. Ni el jefe puede tocarlo directamente.
+-- La única forma de mover stock es el workflow (aprobar -> ejecutar), que corre
+-- dentro de funciones SECURITY DEFINER y deja asiento en stock_ledger.
+-- Un UPDATE suelto sobre esta tabla es exactamente lo que hace imposible
+-- auditar un inventario, así que se prohíbe de raíz.
+drop policy if exists p_inventory_select on public.inventory;
+create policy p_inventory_select on public.inventory
+  for select to authenticated
+  using ((select public.fn_rol_actual()) is not null);
+
+-- -----------------------------------------------------------------------------
+-- E.6 position_assignments — el operario ubica y retira
+-- -----------------------------------------------------------------------------
+-- Aquí sí escribe el OPERARIO: ubicar físicamente la mercadería es su trabajo.
+drop policy if exists p_assign_select on public.position_assignments;
+create policy p_assign_select on public.position_assignments
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_assign_insert on public.position_assignments;
+create policy p_assign_insert on public.position_assignments
+  for insert to authenticated
+  with check ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'));
+drop policy if exists p_assign_update on public.position_assignments;
+create policy p_assign_update on public.position_assignments
+  for update to authenticated
+  using ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'))
+  with check ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'));
+
+-- -----------------------------------------------------------------------------
+-- E.7 inventory_orders — las crea el equipo logístico
+-- -----------------------------------------------------------------------------
+drop policy if exists p_orders_select on public.inventory_orders;
+create policy p_orders_select on public.inventory_orders
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_orders_insert on public.inventory_orders;
+create policy p_orders_insert on public.inventory_orders
+  for insert to authenticated
+  with check ((select public.fn_es_al_menos_supervisor()) and created_by = (select auth.uid()));
+drop policy if exists p_orders_update on public.inventory_orders;
+create policy p_orders_update on public.inventory_orders
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- -----------------------------------------------------------------------------
+-- E.8 inventory_movements — se crean desde el cliente, se resuelven por RPC
+-- -----------------------------------------------------------------------------
+-- INSERT sí (un supervisor registra la intención de mover), pero NO hay
+-- política de UPDATE: aprobar, rechazar, ejecutar y revertir pasan
+-- obligatoriamente por las funciones, que son las que validan segregación de
+-- funciones, límites por rol y disponibilidad de stock. Si existiera un UPDATE
+-- abierto, bastaría con `update ... set status = 'APROBADO'` para saltarse todo
+-- el control interno.
+--
+-- `created_by = auth.uid()` en el WITH CHECK impide crear un movimiento a
+-- nombre de otra persona, que es el primer paso para evadir la segregación.
+drop policy if exists p_mov_select on public.inventory_movements;
+create policy p_mov_select on public.inventory_movements
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_mov_insert on public.inventory_movements;
+create policy p_mov_insert on public.inventory_movements
+  for insert to authenticated
+  with check (
+    (select public.fn_es_al_menos_supervisor())
+    and created_by = (select auth.uid())
+    and status = 'PENDIENTE'          -- nace pendiente, siempre
+    and executed_at is null
+    and approved_by is null
+    and reversal_of_id is null        -- una reversión solo la emite la RPC
+  );
+
+-- -----------------------------------------------------------------------------
+-- E.9 stock_ledger — append-only, y ni siquiera se puede append desde el cliente
+-- -----------------------------------------------------------------------------
+-- Solo lectura. Los asientos los escribe fn_ejecutar_movimiento. Sin política
+-- de INSERT/UPDATE, el kardex es inmutable desde la aplicación: es lo que
+-- permite afirmar que el histórico no fue manipulado.
+drop policy if exists p_ledger_select on public.stock_ledger;
+create policy p_ledger_select on public.stock_ledger
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+
+-- -----------------------------------------------------------------------------
+-- E.10 audit_log — solo jefe y auditor
+-- -----------------------------------------------------------------------------
+-- Quien puede ser auditado no debería poder leer (ni menos escribir) la pista
+-- de auditoría. Sin política de INSERT: las filas las pone el trigger
+-- fn_auditoria, que es SECURITY DEFINER y no pasa por RLS.
+drop policy if exists p_audit_select on public.audit_log;
+create policy p_audit_select on public.audit_log
+  for select to authenticated
+  using ((select public.fn_rol_actual()) in ('JEFE', 'AUDITOR'));
+
+-- -----------------------------------------------------------------------------
+-- E.11 alerts / alert_rules
+-- -----------------------------------------------------------------------------
+-- Las alertas las ve todo el mundo (para eso existen) pero no se editan a mano:
+-- reconocerlas pasa por reconocer_alerta(). Sin política de UPDATE, un usuario
+-- no puede silenciar una alerta crítica cambiándole la severidad.
+drop policy if exists p_alerts_select on public.alerts;
+create policy p_alerts_select on public.alerts
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+
+drop policy if exists p_alert_rules_select on public.alert_rules;
+create policy p_alert_rules_select on public.alert_rules
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_alert_rules_update on public.alert_rules;
+create policy p_alert_rules_update on public.alert_rules
+  for update to authenticated
+  using ((select public.fn_es_jefe())) with check ((select public.fn_es_jefe()));
+drop policy if exists p_alert_rules_insert on public.alert_rules;
+create policy p_alert_rules_insert on public.alert_rules
+  for insert to authenticated with check ((select public.fn_es_jefe()));
+
+-- -----------------------------------------------------------------------------
+-- E.12 approval_requests — el escalamiento
+-- -----------------------------------------------------------------------------
+-- Ve la solicitud quien la pidió, más quien tiene que resolverla.
+-- Sin política de UPDATE: resolver pasa por resolver_aprobacion(), que valida
+-- que quien resuelve no sea quien pidió y que tenga el rango necesario.
+drop policy if exists p_approval_select on public.approval_requests;
+create policy p_approval_select on public.approval_requests
+  for select to authenticated
+  using (
+    (select public.fn_rol_actual()) in ('JEFE', 'AUDITOR')
+    or requested_by = (select auth.uid())
+    or (required_role = 'SUPERVISOR' and (select public.fn_es_al_menos_supervisor()))
+  );
+
+drop policy if exists p_approval_insert on public.approval_requests;
+create policy p_approval_insert on public.approval_requests
+  for insert to authenticated
+  with check (
+    -- AUDITOR excluido: es un rol de solo lectura, no pide autorizaciones.
+    (select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE')
+    and requested_by = (select auth.uid())
+    and status = 'PENDIENTE'
+  );
+
+-- -----------------------------------------------------------------------------
+-- E.13 discrepancies — el operario reporta, el supervisor resuelve
+-- -----------------------------------------------------------------------------
+drop policy if exists p_discrep_select on public.discrepancies;
+create policy p_discrep_select on public.discrepancies
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_discrep_insert on public.discrepancies;
+create policy p_discrep_insert on public.discrepancies
+  for insert to authenticated
+  with check (
+    (select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE')
+    and reported_by = (select auth.uid())
+  );
+drop policy if exists p_discrep_update on public.discrepancies;
+create policy p_discrep_update on public.discrepancies
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- -----------------------------------------------------------------------------
+-- E.14 Conteo cíclico — el operario cuenta, el supervisor abre y cierra
+-- -----------------------------------------------------------------------------
+drop policy if exists p_counts_select on public.inventory_counts;
+create policy p_counts_select on public.inventory_counts
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_counts_insert on public.inventory_counts;
+create policy p_counts_insert on public.inventory_counts
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_counts_update on public.inventory_counts;
+create policy p_counts_update on public.inventory_counts
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+-- Las líneas sí las escribe el operario: contar es su trabajo.
+drop policy if exists p_count_lines_select on public.inventory_count_lines;
+create policy p_count_lines_select on public.inventory_count_lines
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_count_lines_insert on public.inventory_count_lines;
+create policy p_count_lines_insert on public.inventory_count_lines
+  for insert to authenticated
+  with check ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'));
+drop policy if exists p_count_lines_update on public.inventory_count_lines;
+create policy p_count_lines_update on public.inventory_count_lines
+  for update to authenticated
+  using ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'))
+  with check ((select public.fn_rol_actual()) in ('OPERARIO', 'SUPERVISOR', 'JEFE'));
+
+
+-- =============================================================================
+--  BLOQUE F — LO QUE RLS NO PUEDE HACER: TRIGGERS COMPLEMENTARIOS
+-- =============================================================================
+
+-- Una política UPDATE no puede comparar el valor viejo con el nuevo (USING ve
+-- OLD, WITH CHECK ve NEW, pero no hay forma de relacionarlos). Sin este
+-- trigger, la política que deja a cada usuario editar su propia fila de
+-- profiles le permitiría también ascenderse a JEFE.
+create or replace function public.fn_no_autoascenso()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- El rol postgres (SQL Editor, seed, migraciones) no pasa por esta validación.
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  if new.role is distinct from old.role and public.fn_rol_actual() is distinct from 'JEFE' then
+    raise exception 'No puedes cambiar tu propio rol. Solo un jefe asigna roles.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if new.max_movement_qty is distinct from old.max_movement_qty
+     and public.fn_rol_actual() is distinct from 'JEFE' then
+    raise exception 'Solo un jefe modifica los límites de aprobación.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  if new.is_active is distinct from old.is_active
+     and public.fn_rol_actual() is distinct from 'JEFE' then
+    raise exception 'Solo un jefe activa o desactiva usuarios.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  -- El correo identifica a la persona en el dashboard y es lo que se usa para
+  -- promover al primer jefe desde el SQL Editor. Dejarlo editable permitiría
+  -- que alguien se ponga el correo de otro y termine promovido por error.
+  if new.email is distinct from old.email
+     and public.fn_rol_actual() is distinct from 'JEFE' then
+    raise exception 'El correo lo administra el jefe de almacén.'
+      using errcode = 'insufficient_privilege';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_profiles_no_autoascenso on public.profiles;
+create trigger trg_profiles_no_autoascenso
+  before update on public.profiles
+  for each row execute function public.fn_no_autoascenso();
+
+
+-- =============================================================================
+--  BLOQUE G — PERMISOS DE ROL (defensa en profundidad, antes de RLS)
+-- =============================================================================
+-- RLS filtra filas, pero solo si el rol de Postgres tiene permiso sobre la
+-- tabla. Estos GRANT/REVOKE son la capa previa: aunque una política quedara mal
+-- escrita, el permiso de rol sigue bloqueando lo que no corresponde.
+
+-- Nadie sin autenticar toca nada. El dashboard exige sesión.
+revoke all on all tables    in schema public from anon;
+revoke all on all functions in schema public from anon;
+revoke all on all sequences in schema public from anon;
+
+-- DELETE prohibido globalmente: coherente con "aquí nada se borra físicamente".
+-- Es también la red de seguridad por si alguien agregara una política de DELETE
+-- por descuido en el futuro.
+revoke delete on all tables in schema public from authenticated;
+
+-- Denegar por defecto y conceder solo lo necesario: el cliente NO debe poder
+-- llamar las fn_* internas, que aceptan p_user_id y permitirían suplantación.
+revoke execute on all functions in schema public from authenticated;
+
+grant execute on function public.fn_rol_actual()                to authenticated;
+grant execute on function public.fn_es_al_menos_supervisor()    to authenticated;
+grant execute on function public.fn_es_jefe()                   to authenticated;
+grant execute on function public.actor_actual()                 to authenticated;
+
+grant execute on function public.aprobar_movimiento(uuid)                       to authenticated;
+grant execute on function public.ejecutar_movimiento(uuid, integer, text)       to authenticated;
+grant execute on function public.rechazar_movimiento(uuid, text)                to authenticated;
+grant execute on function public.revertir_movimiento(uuid, text)                to authenticated;
+grant execute on function public.eliminar_articulo(uuid, text)                  to authenticated;
+grant execute on function public.solicitar_aprobacion(text, text, uuid, text, jsonb) to authenticated;
+grant execute on function public.resolver_aprobacion(uuid, boolean, text)       to authenticated;
+grant execute on function public.reconocer_alerta(uuid)                         to authenticated;
+
+grant select on public.v_catalogo_operativo to authenticated;
+
+-- El revoke masivo de arriba es deliberadamente amplio, pero puede alcanzar
+-- funciones de extensión que sí hacen falta. gen_random_uuid() es el DEFAULT del
+-- id de casi todas las tablas: si pgcrypto quedó instalada en `public` (la
+-- migración 01 la crea sin cláusula SCHEMA), sin este grant todo INSERT hecho
+-- por un usuario autenticado fallaría con 'permission denied for function'.
+-- Se re-concede solo si efectivamente vive en public.
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as firma
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.proname in ('gen_random_uuid', 'digest', 'crypt', 'gen_salt')
+  loop
+    execute format('grant execute on function %s to authenticated', r.firma);
+  end loop;
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE H — VÍNCULO CON SUPABASE AUTH
+-- =============================================================================
+-- AGUJERO CERRADO (parcialmente): profiles.id debe ser el mismo UUID que
+-- auth.users.id, o auth.uid() nunca encontrará un perfil y RLS bloqueará todo.
+--
+-- No se activa la FK a auth.users porque los perfiles del smoke test
+-- (11111111-…, 22222222-…) no existen en auth.users y el ALTER fallaría.
+-- En su lugar se auto-crea el perfil cuando alguien se registra, que es el
+-- patrón estándar de Supabase.
+--
+-- El primer usuario debe promoverse a JEFE manualmente desde el SQL Editor:
+--    update public.profiles set role = 'JEFE' where email = 'tu@correo.com';
+-- Es deliberado: si el registro público pudiera crear jefes, cualquiera con el
+-- enlace de sign-up se haría administrador del almacén.
+create or replace function public.fn_crear_perfil_nuevo_usuario()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, full_name, email, role)
+  values (
+    new.id,
+    -- El último fallback no es cosmético: full_name es NOT NULL con CHECK de
+    -- longitud, y un alta por teléfono o por un proveedor OAuth que no devuelva
+    -- correo dejaría los dos primeros en NULL. Como el trigger corre en la
+    -- transacción del alta, ese fallo abortaría el registro entero.
+    coalesce(
+      nullif(btrim(new.raw_user_meta_data ->> 'full_name'), ''),
+      nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+      'Usuario ' || left(new.id::text, 8)
+    ),
+    new.email,
+    'OPERARIO'          -- el rol mínimo, siempre
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+do $$
+begin
+  drop trigger if exists trg_auth_user_creado on auth.users;
+  create trigger trg_auth_user_creado
+    after insert on auth.users
+    for each row execute function public.fn_crear_perfil_nuevo_usuario();
+exception when insufficient_privilege or undefined_table then
+  raise notice 'No se pudo crear el trigger sobre auth.users (permisos o esquema ausente). Crea los perfiles manualmente con el mismo id de auth.users.';
+end;
+$$;
+
+
+-- =============================================================================
+--  NOTAS PARA LA SUSTENTACIÓN
+-- =============================================================================
+--  1. ¿Por qué el stock no tiene política de escritura?
+--     Porque un UPDATE directo sobre `inventory` es indistinguible de un fraude.
+--     Toda variación de saldo pasa por el workflow y queda con asiento en
+--     stock_ledger, autor y motivo.
+--
+--  2. ¿Por qué hay funciones `fn_*` y otras sin prefijo?
+--     Las fn_* reciben el usuario como parámetro y son de uso administrativo;
+--     están revocadas para el cliente. Las públicas derivan el usuario de
+--     auth.uid(), así que nadie puede operar en nombre de otro.
+--
+--  3. ¿Por qué ninguna tabla permite DELETE?
+--     Maestros con deleted_at, movimientos con contra-asiento, kardex y
+--     auditoría append-only. El DELETE está revocado a nivel de rol además de
+--     no tener política.
+--
+--  4. ¿Cómo se prueba todo esto?
+--     tests/02_rls_test.sql simula usuarios reales con set_config sobre
+--     request.jwt.claims y verifica que cada rol pueda hacer exactamente lo que
+--     le corresponde, y nada más.
+-- =============================================================================

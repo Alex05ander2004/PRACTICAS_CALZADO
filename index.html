@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventario — Almacén de Calzado</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="css/dashboard.css" />
+</head>
+<body>
+
+  <!-- ============================================================ -->
+  <!-- PANTALLA DE LOGIN                                             -->
+  <!-- ============================================================ -->
+  <div id="pantallaLogin" class="pantalla-login">
+    <form id="formLogin" class="tarjeta-login">
+      <div class="marca-login"><span>WMS</span> Calzado</div>
+      <p class="subtitulo-login">Inicia sesión con tu cuenta de almacén.</p>
+
+      <label for="loginEmail">Correo</label>
+      <input id="loginEmail" type="email" required autocomplete="username" />
+
+      <label for="loginPassword">Contraseña</label>
+      <input id="loginPassword" type="password" required autocomplete="current-password" />
+
+      <button type="submit" class="btn-primario">Iniciar sesión</button>
+      <p id="loginError" class="login-error" hidden></p>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- DASHBOARD                                                     -->
+  <!-- ============================================================ -->
+  <div id="pantallaDashboard" hidden>
+    <header class="topbar">
+      <div class="marca">WMS <span>Calzado</span></div>
+      <div class="contexto">Almacén A · Bodega B · Bodega C</div>
+      <div class="usuario">
+        <span id="usuarioNombre"></span>
+        <span id="usuarioRol" class="rol-chip"></span>
+        <button id="btnSalir" class="btn-salir">Salir</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="seccionKpis">
+        <h2 class="section-titulo">Resumen</h2>
+        <div class="kpis" id="kpis">
+          <div class="skeleton">Cargando resumen…</div>
+        </div>
+      </section>
+
+      <section id="seccionTabla">
+        <h2 class="section-titulo">Inventario</h2>
+        <div class="tabla-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Artículo</th>
+                <th>Categoría</th>
+                <th>Stock</th>
+                <th>Costo</th>
+                <th>Precio</th>
+                <th>Proveedor</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tablaArticulosBody">
+              <tr><td colspan="9" class="skeleton">Cargando artículos…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Orden importa: supabase-js primero, config y cliente antes que los módulos que los usan. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/config.js"></script>
+  <script src="js/supabaseClient.js"></script>
+  <script src="js/api/auth.js"></script>
+  <script src="js/api/catalogo.js"></script>
+  <script src="js/api/inventario.js"></script>
+  <script src="js/api/movimientos.js"></script>
+  <script src="js/api/alertas.js"></script>
+  <script src="js/dashboard.js"></script>
+</body>
+</html>

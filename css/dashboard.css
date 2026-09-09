@@ -1,0 +1,412 @@
+/* ============================================================================
+   TOKENS
+   Paleta gris-acero/concreto con acento azul industrial (ISO 7010: el azul es
+   la señal de "acción obligatoria" — coherente con un sistema que aprueba y
+   ejecuta operaciones). El semáforo de estado (ok/warn/bad) es intencionalmente
+   una familia de color distinta del acento.
+   ========================================================================= */
+:root {
+  --ground: #EEF1F2;
+  --surface: #FFFFFF;
+  --surface-2: #F5F7F8;
+  --ink: #1B2226;
+  --muted: #5B6770;
+  --line: #D9DFE2;
+  --accent: #1D6F8C;
+  --accent-ink: #FFFFFF;
+  --accent-weak: #E2EEF2;
+
+  --ok: #2F7A4D;
+  --ok-weak: #E3F0E7;
+  --warn: #B7791F;
+  --warn-weak: #F5ECD9;
+  --bad: #C53030;
+  --bad-weak: #F8E4E4;
+
+  --shadow: 0 1px 2px rgba(27, 34, 38, .05), 0 6px 16px -8px rgba(27, 34, 38, .16);
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #14181B;
+    --surface: #1C2126;
+    --surface-2: #21272C;
+    --ink: #E7ECEE;
+    --muted: #93A0A8;
+    --line: #2E363B;
+    --accent: #5FA8C4;
+    --accent-ink: #0D1417;
+    --accent-weak: #1E323A;
+    --ok: #7FC998;
+    --ok-weak: #1E2E22;
+    --warn: #E0B667;
+    --warn-weak: #32291A;
+    --bad: #E38080;
+    --bad-weak: #351F1F;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 16px -8px rgba(0, 0, 0, .6);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #14181B;
+  --surface: #1C2126;
+  --surface-2: #21272C;
+  --ink: #E7ECEE;
+  --muted: #93A0A8;
+  --line: #2E363B;
+  --accent: #5FA8C4;
+  --accent-ink: #0D1417;
+  --accent-weak: #1E323A;
+  --ok: #7FC998;
+  --ok-weak: #1E2E22;
+  --warn: #E0B667;
+  --warn-weak: #32291A;
+  --bad: #E38080;
+  --bad-weak: #351F1F;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 16px -8px rgba(0, 0, 0, .6);
+}
+
+/* ============================================================================
+   BASE
+   ========================================================================= */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+a { color: var(--accent); }
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ============================================================================
+   LOGIN
+   ========================================================================= */
+.pantalla-login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ground);
+  padding: 24px;
+}
+
+.tarjeta-login {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 32px 28px;
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.marca-login {
+  font-family: "Big Shoulders Display", sans-serif;
+  font-weight: 700;
+  font-size: 26px;
+}
+.marca-login span { color: var(--accent); }
+
+.subtitulo-login {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.tarjeta-login label {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.tarjeta-login input {
+  font: inherit;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.tarjeta-login input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn-primario {
+  margin-top: 14px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 7px;
+  padding: 10px 14px;
+  font-weight: 500;
+  font-size: 14px;
+}
+.btn-primario:hover { filter: brightness(1.08); }
+.btn-primario:disabled { opacity: .6; cursor: default; }
+
+.login-error {
+  background: var(--bad-weak);
+  color: var(--bad);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  margin: 4px 0 0;
+}
+
+/* ============================================================================
+   ENCABEZADO
+   Franja compacta: identidad del sistema, contexto de almacén, usuario/rol.
+   No es un hero de marketing — es una barra de trabajo.
+   ========================================================================= */
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.topbar .marca {
+  font-family: "Big Shoulders Display", sans-serif;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+
+.topbar .marca span { color: var(--accent); }
+
+.topbar .contexto {
+  color: var(--muted);
+  font-size: 13px;
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.topbar .usuario {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.rol-chip {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.btn-salir {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.btn-salir:hover { border-color: var(--bad); color: var(--bad); }
+
+/* ============================================================================
+   CONTENEDOR
+   ========================================================================= */
+main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+section { margin-bottom: 28px; }
+
+.section-titulo {
+  font-family: "Big Shoulders Display", sans-serif;
+  font-weight: 600;
+  font-size: 20px;
+  margin: 0 0 12px;
+}
+
+/* ============================================================================
+   KPIs
+   No son 5 tarjetas idénticas: "bajo mínimo" pesa más porque es lo único que
+   exige una acción. Las demás son lectura de contexto.
+   ========================================================================= */
+.kpis {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1fr 1fr 1.2fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+}
+
+.kpi {
+  background: var(--surface);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.kpi.alerta {
+  background: var(--warn-weak);
+}
+
+.kpi .valor {
+  font-family: "Big Shoulders Display", sans-serif;
+  font-weight: 700;
+  font-size: 34px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.kpi.alerta .valor { color: var(--warn); }
+
+.kpi .etiqueta {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.kpi .detalle {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ============================================================================
+   TABLA (estructura base; búsqueda/filtros llegan en la Fase 5)
+   El borde izquierdo de cada fila codifica el estado de stock — la versión
+   digital de una etiqueta de bin física, para escanear sin leer texto.
+   ========================================================================= */
+.tabla-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+thead th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+tbody tr {
+  border-left: 3px solid transparent;
+}
+tbody tr[data-estado="OK"]           { border-left-color: var(--ok); }
+tbody tr[data-estado="BAJO_MINIMO"]  { border-left-color: var(--warn); }
+tbody tr[data-estado="SIN_STOCK"]    { border-left-color: var(--bad); }
+tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
+
+.celda-num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.pill.ok   { background: var(--ok-weak);   color: var(--ok); }
+.pill.warn { background: var(--warn-weak); color: var(--warn); }
+.pill.bad  { background: var(--bad-weak);  color: var(--bad); }
+
+.acciones { display: flex; gap: 6px; }
+
+.btn-accion {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.btn-accion:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+.btn-accion:disabled { opacity: .45; cursor: default; }
+
+.estado-vacio {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.estado-vacio p:first-child {
+  font-family: "Big Shoulders Display", sans-serif;
+  font-size: 18px;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+
+/* ============================================================================
+   UTILIDADES
+   ========================================================================= */
+[hidden] { display: none !important; }
+
+.skeleton {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

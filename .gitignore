@@ -1,0 +1,4 @@
+js/config.js
+
+# Herramientas locales de Claude Code (skills/plugins), no es parte del proyecto
+.claude/
