@@ -34,7 +34,7 @@ const CatalogoAPI = {
         `
         id, sku, size_label, size_system, price, cost, weight, length, width, height, is_active,
         product:products (
-          id, model_code, name, description,
+          id, model_code, name, description, audience,
           brand:brands ( id, name ),
           category:categories ( id, name ),
           supplier:suppliers ( id, name )

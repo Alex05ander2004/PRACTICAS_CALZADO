@@ -310,6 +310,46 @@ section { margin-bottom: 28px; }
    El borde izquierdo de cada fila codifica el estado de stock — la versión
    digital de una etiqueta de bin física, para escanear sin leer texto.
    ========================================================================= */
+.filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.filtro-texto {
+  flex: 1 1 220px;
+  min-width: 180px;
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.filtro-select {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.filtro-texto:focus-visible,
+.filtro-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.contador-resultados {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
 .tabla-wrap {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -364,6 +404,7 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 .pill.ok   { background: var(--ok-weak);   color: var(--ok); }
 .pill.warn { background: var(--warn-weak); color: var(--warn); }
 .pill.bad  { background: var(--bad-weak);  color: var(--bad); }
+.pill.nino { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
 
 .acciones { display: flex; gap: 6px; }
 

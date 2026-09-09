@@ -107,11 +107,14 @@ function filaArticulo(art) {
   const costo = art.cost != null ? formatoMoneda.format(art.cost) : '—';
   const precio = art.price != null ? formatoMoneda.format(art.price) : '—';
 
+  const esInfantil = art.product?.audience === 'NINO';
+  const insigniaPublico = esInfantil ? '<span class="pill nino">Niño</span>' : '';
+
   const tr = document.createElement('tr');
   tr.dataset.estado = estado;
   tr.innerHTML = `
     <td class="mono">${art.sku}</td>
-    <td>${nombre}${talla}</td>
+    <td>${nombre}${talla} ${insigniaPublico}</td>
     <td>${categoria}</td>
     <td class="celda-num">${cantidad}</td>
     <td class="celda-num">${costo}</td>
@@ -126,14 +129,18 @@ function filaArticulo(art) {
   return tr;
 }
 
-function renderTabla(articulos) {
+function renderTabla(articulos, hayFiltrosActivos) {
   const cuerpo = document.getElementById('tablaArticulosBody');
   cuerpo.innerHTML = '';
 
   if (articulos.length === 0) {
-    cuerpo.innerHTML = `<tr><td colspan="9">
-      <div class="estado-vacio"><p>Sin artículos todavía</p><p>Crea el primero desde la Fase 6.</p></div>
-    </td></tr>`;
+    cuerpo.innerHTML = hayFiltrosActivos
+      ? `<tr><td colspan="9">
+          <div class="estado-vacio"><p>Ningún artículo coincide</p><p>Prueba con otra búsqueda o quita algún filtro.</p></div>
+        </td></tr>`
+      : `<tr><td colspan="9">
+          <div class="estado-vacio"><p>Sin artículos todavía</p><p>Crea el primero desde la Fase 6.</p></div>
+        </td></tr>`;
     return;
   }
 
@@ -141,6 +148,93 @@ function renderTabla(articulos) {
   for (const art of articulos) fragmento.appendChild(filaArticulo(art));
   cuerpo.appendChild(fragmento);
 }
+
+// --- Búsqueda y filtros (Fase 5) -------------------------------------------
+// Todo se filtra en el navegador: con ~80 artículos no hace falta ir a la base
+// por cada tecleo, y así el buscador responde al instante.
+let todosLosArticulos = [];
+
+function normalizar(texto) {
+  return (texto ?? '')
+    .toString()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, ''); // quita tildes para que "botin" encuentre el acentuado
+}
+
+function poblarSelectDesdeArticulos(id, obtenerValor) {
+  const select = document.getElementById(id);
+  const valorPrevio = select.value;
+  const valores = [...new Set(todosLosArticulos.map(obtenerValor).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b, 'es')
+  );
+
+  // La primera opción ("todas"/"todos") ya está en el HTML; el resto se genera.
+  select.length = 1;
+  for (const v of valores) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v;
+    select.appendChild(opt);
+  }
+  if (valores.includes(valorPrevio)) select.value = valorPrevio;
+}
+
+function aplicarFiltros() {
+  const texto = normalizar(document.getElementById('filtroTexto').value.trim());
+  const categoria = document.getElementById('filtroCategoria').value;
+  const proveedor = document.getElementById('filtroProveedor').value;
+  const publico = document.getElementById('filtroPublico').value;
+  const estadoBuscado = document.getElementById('filtroStock').value;
+
+  const hayFiltrosActivos = Boolean(texto || categoria || proveedor || publico || estadoBuscado);
+
+  const filtrados = todosLosArticulos.filter((art) => {
+    if (texto) {
+      const coincideTexto =
+        normalizar(art.sku).includes(texto) || normalizar(art.product?.name).includes(texto);
+      if (!coincideTexto) return false;
+    }
+    if (categoria && art.product?.category?.name !== categoria) return false;
+    if (proveedor && art.product?.supplier?.name !== proveedor) return false;
+    if (publico && art.product?.audience !== publico) return false;
+    if (estadoBuscado) {
+      const { filaPrincipal } = stockDelArticulo(art);
+      if (calcularEstadoStock(filaPrincipal) !== estadoBuscado) return false;
+    }
+    return true;
+  });
+
+  document.getElementById('contadorResultados').textContent =
+    `${filtrados.length} de ${todosLosArticulos.length} artículos`;
+  renderTabla(filtrados, hayFiltrosActivos);
+}
+
+function inicializarFiltros(articulos) {
+  todosLosArticulos = articulos;
+
+  poblarSelectDesdeArticulos('filtroCategoria', (a) => a.product?.category?.name);
+  poblarSelectDesdeArticulos('filtroProveedor', (a) => a.product?.supplier?.name);
+
+  aplicarFiltros();
+}
+
+let debounceTexto;
+document.getElementById('filtroTexto').addEventListener('input', () => {
+  clearTimeout(debounceTexto);
+  debounceTexto = setTimeout(aplicarFiltros, 150);
+});
+for (const id of ['filtroCategoria', 'filtroProveedor', 'filtroPublico', 'filtroStock']) {
+  document.getElementById(id).addEventListener('change', aplicarFiltros);
+}
+document.getElementById('btnLimpiarFiltros').addEventListener('click', () => {
+  document.getElementById('filtroTexto').value = '';
+  document.getElementById('filtroCategoria').value = '';
+  document.getElementById('filtroProveedor').value = '';
+  document.getElementById('filtroPublico').value = '';
+  document.getElementById('filtroStock').value = '';
+  aplicarFiltros();
+});
 
 async function cargarDashboard() {
   const perfil = await AuthAPI.obtenerPerfilActual();
@@ -165,7 +259,7 @@ async function cargarDashboard() {
   ]);
 
   renderKpis(articulos, movimientos);
-  renderTabla(articulos);
+  inicializarFiltros(articulos);
 }
 
 document.getElementById('formLogin').addEventListener('submit', async (evento) => {

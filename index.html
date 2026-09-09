@@ -57,6 +57,37 @@
 
       <section id="seccionTabla">
         <h2 class="section-titulo">Inventario</h2>
+
+        <div class="filtros">
+          <input
+            id="filtroTexto"
+            type="text"
+            placeholder="Buscar por artículo o SKU…"
+            class="filtro-texto"
+          />
+          <select id="filtroCategoria" class="filtro-select">
+            <option value="">Categoría: todas</option>
+          </select>
+          <select id="filtroProveedor" class="filtro-select">
+            <option value="">Proveedor: todos</option>
+          </select>
+          <select id="filtroPublico" class="filtro-select">
+            <option value="">Público: todos</option>
+            <option value="ADULTO">Adulto</option>
+            <option value="NINO">Niño</option>
+          </select>
+          <select id="filtroStock" class="filtro-select">
+            <option value="">Stock: todos</option>
+            <option value="OK">OK</option>
+            <option value="BAJO_MINIMO">Bajo mínimo</option>
+            <option value="SIN_STOCK">Sin stock</option>
+            <option value="SOBRE_MAXIMO">Sobre máximo</option>
+          </select>
+          <button id="btnLimpiarFiltros" class="btn-accion">Limpiar</button>
+        </div>
+
+        <p id="contadorResultados" class="contador-resultados"></p>
+
         <div class="tabla-wrap">
           <table>
             <thead>
