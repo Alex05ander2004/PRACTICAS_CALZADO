@@ -9,6 +9,8 @@
 --     migrations/05_umbrales_inventario.sql    -> editar min_stock/max_stock por columna
 --     migrations/06_crear_registro_inventario.sql -> crear el primer registro de stock
 --     migrations/07_mapa_almacen_completo.sql  -> exponer IDs de posicion/asignacion en el mapa
+--     migrations/08_rutas_almacen.sql          -> (superada por la 09) grafo declarado a mano
+--     migrations/09_layout_editor.sql          -> plano editable por geometria + rutas con A*
 --
 --  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
 --  vez sobre una base vacía. Es idempotente. Requiere PostgreSQL 15+.
@@ -3214,5 +3216,360 @@ alter view public.v_mapa_almacen set (security_invoker = on);
 
 comment on view public.v_mapa_almacen is
   'Mapa completo del almacén: todas las posiciones, libres y ocupadas, con los IDs necesarios para actuar (asignar/liberar), no solo para mostrar.';
+
+
+-- =============================================================================
+--  MIGRACIÓN 08 — GRAFO DEL ALMACÉN: COORDENADAS REALES Y RUTA MÁS CORTA
+--
+--  Pedido del jefe: posiciones exactas (no "tarjetas en fila") y poder
+--  calcular la ruta más corta entre dos puntos. Se modela el almacén como un
+--  GRAFO: cada rack (la unidad por la que realmente se camina, no cada
+--  posición individual) es un nodo con coordenadas X/Y reales, más un nodo
+--  "ENTRADA" por almacén. Los pasillos caminables son las aristas, con su
+--  distancia. El algoritmo de ruta (Dijkstra) corre en el cliente — el grafo
+--  es chico (≤7 nodos por almacén) y así queda visible/explicable en la
+--  sustentación, no escondido en una función opaca.
+--
+--  Fuera de alcance a propósito: no se sube ninguna imagen/plano para que el
+--  sistema "detecte" racks solo — eso es un problema de visión por
+--  computadora, no de bases de datos, y no era razonable para el tiempo
+--  disponible. Las coordenadas son reales pero se cargan a mano (como se
+--  cargaría un plano en cualquier WMS real la primera vez).
+--
+--  Requiere 01-07. Idempotente.
+-- =============================================================================
+
+
+-- =============================================================================
+--  BLOQUE A — TABLAS DEL GRAFO
+-- =============================================================================
+create table if not exists public.warehouse_nodes (
+  id           uuid primary key default gen_random_uuid(),
+  warehouse_id uuid        not null references public.warehouses (id) on delete cascade,
+  rack_id      uuid        unique references public.racks (id) on delete cascade,
+  node_type    text        not null check (node_type in ('ENTRADA', 'RACK')),
+  code         text        not null,
+  x_coord      numeric     not null,
+  y_coord      numeric     not null,
+  created_at   timestamptz not null default now(),
+  constraint uq_node_almacen_code unique (warehouse_id, code),
+  constraint ck_node_rack_consistente check (
+    (node_type = 'RACK'    and rack_id is not null)
+    or
+    (node_type = 'ENTRADA' and rack_id is null)
+  )
+);
+comment on table public.warehouse_nodes is
+  'Nodos del grafo de ruteo: un nodo ENTRADA por almacén + un nodo por rack (el rack, no cada posición, es la unidad por la que se camina).';
+
+-- Aristas NO dirigidas (un pasillo se camina en los dos sentidos): el par se
+-- guarda siempre ordenado (least, greatest) y el índice único de abajo impide
+-- cargar la misma arista dos veces sin importar en qué orden se inserte.
+create table if not exists public.warehouse_edges (
+  id          uuid primary key default gen_random_uuid(),
+  node_a_id   uuid    not null references public.warehouse_nodes (id) on delete cascade,
+  node_b_id   uuid    not null references public.warehouse_nodes (id) on delete cascade,
+  distancia   numeric not null check (distancia > 0),
+  created_at  timestamptz not null default now(),
+  constraint ck_edge_no_autolazo check (node_a_id <> node_b_id)
+);
+create unique index if not exists uq_edge_par
+  on public.warehouse_edges (least(node_a_id, node_b_id), greatest(node_a_id, node_b_id));
+
+comment on table public.warehouse_edges is
+  'Pasillos caminables entre dos nodos. La distancia es la que recorre una persona, no necesariamente la línea recta.';
+
+create index if not exists ix_nodes_warehouse on public.warehouse_nodes (warehouse_id);
+create index if not exists ix_edges_node_a    on public.warehouse_edges (node_a_id);
+create index if not exists ix_edges_node_b    on public.warehouse_edges (node_b_id);
+
+
+-- =============================================================================
+--  BLOQUE B — RLS
+-- =============================================================================
+alter table public.warehouse_nodes enable row level security;
+alter table public.warehouse_edges enable row level security;
+
+-- Igual que el resto del mapa: cualquier perfil activo lo puede leer (hace
+-- falta para calcular una ruta), pero definir la topología del almacén es
+-- trabajo de SUPERVISOR+, no algo que un operario deba poder tocar.
+drop policy if exists p_nodes_select on public.warehouse_nodes;
+create policy p_nodes_select on public.warehouse_nodes
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_nodes_write on public.warehouse_nodes;
+create policy p_nodes_write on public.warehouse_nodes
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+drop policy if exists p_nodes_update on public.warehouse_nodes;
+create policy p_nodes_update on public.warehouse_nodes
+  for update to authenticated
+  using ((select public.fn_es_al_menos_supervisor()))
+  with check ((select public.fn_es_al_menos_supervisor()));
+
+drop policy if exists p_edges_select on public.warehouse_edges;
+create policy p_edges_select on public.warehouse_edges
+  for select to authenticated using ((select public.fn_rol_actual()) is not null);
+drop policy if exists p_edges_write on public.warehouse_edges;
+create policy p_edges_write on public.warehouse_edges
+  for insert to authenticated with check ((select public.fn_es_al_menos_supervisor()));
+
+revoke all on public.warehouse_nodes from anon;
+revoke all on public.warehouse_edges from anon;
+-- Sin política de DELETE en ninguna de las dos: mismo criterio que el resto
+-- del sistema — la topología no se borra, se corrige con un UPDATE.
+
+
+-- =============================================================================
+--  BLOQUE C — GRAFO DE LOS 3 ALMACENES (coordenadas reales de referencia)
+-- =============================================================================
+-- Layout de ALM-A: dos filas de racks con la entrada abajo al centro.
+--
+--     RACK-06   RACK-07   RACK-08          y=50
+--     RACK-01   RACK-03   RACK-05          y=150
+--              ENTRADA                     y=250
+--     x=50      x=150     x=250
+do $$
+begin
+  if exists (select 1 from public.warehouse_nodes) then
+    raise notice 'El grafo de almacenes ya estaba cargado, no se duplica.';
+    return;
+  end if;
+
+  insert into public.warehouse_nodes (warehouse_id, rack_id, node_type, code, x_coord, y_coord)
+  select w.id, r.id, 'RACK', r.code, x.xc, x.yc
+    from (values
+      ('ALM-A','RACK-01', 50, 150), ('ALM-A','RACK-03',150, 150), ('ALM-A','RACK-05',250, 150),
+      ('ALM-A','RACK-06', 50,  50), ('ALM-A','RACK-07',150,  50), ('ALM-A','RACK-08',250,  50),
+      ('BOD-B','RACK-01',100,  50), ('BOD-B','RACK-02',200,  50), ('BOD-B','RACK-04',300,  50),
+      ('BOD-B','RACK-07',200, 150),
+      ('BOD-C','RACK-02',100,  50), ('BOD-C','RACK-06',200,  50), ('BOD-C','RACK-07',150, 150)
+    ) as x(wh_code, rack_code, xc, yc)
+    join public.warehouses w on w.code = x.wh_code
+    join public.racks      r on r.warehouse_id = w.id and r.code = x.rack_code;
+
+  insert into public.warehouse_nodes (warehouse_id, rack_id, node_type, code, x_coord, y_coord)
+  select w.id, null, 'ENTRADA', 'ENTRADA', x.xc, x.yc
+    from (values ('ALM-A',150,250), ('BOD-B',0,50), ('BOD-C',0,50)) as x(wh_code, xc, yc)
+    join public.warehouses w on w.code = x.wh_code;
+
+  raise notice 'Nodos del grafo cargados: % ', (select count(*) from public.warehouse_nodes);
+end;
+$$;
+
+-- Aristas: se calcula la distancia real (euclidiana) entre los dos nodos en
+-- vez de tipearla a mano, para que no se desincronice de las coordenadas de
+-- arriba si alguna vez cambian.
+do $$
+begin
+  if exists (select 1 from public.warehouse_edges) then
+    raise notice 'Las aristas ya estaban cargadas, no se duplican.';
+    return;
+  end if;
+
+  insert into public.warehouse_edges (node_a_id, node_b_id, distancia)
+  select na.id, nb.id, sqrt(power(na.x_coord - nb.x_coord, 2) + power(na.y_coord - nb.y_coord, 2))
+    from (values
+      -- ALM-A: entrada a la fila de abajo, fila de abajo entre sí, y cada
+      -- rack de abajo con el que tiene encima (pasillo vertical).
+      ('ALM-A','ENTRADA','RACK-01'), ('ALM-A','ENTRADA','RACK-03'), ('ALM-A','ENTRADA','RACK-05'),
+      ('ALM-A','RACK-01','RACK-03'), ('ALM-A','RACK-03','RACK-05'),
+      ('ALM-A','RACK-01','RACK-06'), ('ALM-A','RACK-03','RACK-07'), ('ALM-A','RACK-05','RACK-08'),
+      ('ALM-A','RACK-06','RACK-07'), ('ALM-A','RACK-07','RACK-08'),
+      -- BOD-B: una fila principal + RACK-07 colgando de RACK-02.
+      ('BOD-B','ENTRADA','RACK-01'), ('BOD-B','RACK-01','RACK-02'), ('BOD-B','RACK-02','RACK-04'),
+      ('BOD-B','RACK-02','RACK-07'),
+      -- BOD-C: triángulo simple, más de un camino posible (bueno para
+      -- demostrar que Dijkstra elige el corto, no el primero que encuentra).
+      ('BOD-C','ENTRADA','RACK-02'), ('BOD-C','RACK-02','RACK-06'),
+      ('BOD-C','RACK-02','RACK-07'), ('BOD-C','RACK-06','RACK-07')
+    ) as x(wh_code, code_a, code_b)
+    join public.warehouses      w  on w.code = x.wh_code
+    join public.warehouse_nodes na on na.warehouse_id = w.id and na.code = x.code_a
+    join public.warehouse_nodes nb on nb.warehouse_id = w.id and nb.code = x.code_b;
+
+  raise notice 'Aristas cargadas: %', (select count(*) from public.warehouse_edges);
+end;
+$$;
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+select
+  w.code as almacen,
+  count(distinct n.id) as nodos,
+  count(distinct e.id) as aristas
+from public.warehouses w
+left join public.warehouse_nodes n on n.warehouse_id = w.id
+left join public.warehouse_edges e on e.node_a_id = n.id
+group by w.code
+order by w.code;
+-- Esperado: ALM-A 7 nodos/10 aristas, BOD-B 5 nodos/4 aristas, BOD-C 4 nodos/4 aristas.
+
+
+-- =============================================================================
+--  MIGRACIÓN 09 — EL ALMACÉN COMO GEOMETRÍA: GRILLA, RACKS CON FORMA Y A*
+--
+--  Cambio de enfoque respecto de la migración 08. Ahí el grafo de pasillos se
+--  declaraba a mano (el nodo A conecta con el nodo B). Eso funciona mientras
+--  nadie mueva nada — pero si el layout se edita visualmente (arrastrar racks
+--  para armar el almacén como es en la realidad), un grafo escrito a mano
+--  queda desactualizado en el primer movimiento.
+--
+--  El modelo correcto para un layout editable es GEOMETRÍA, no topología:
+--    - El almacén es una grilla de celdas (grid_ancho x grid_alto), 1 celda ≈ 1 m.
+--    - Cada rack es un RECTÁNGULO sobre esa grilla: ocupa celdas y las bloquea.
+--    - La ruta más corta se calcula con A* sobre las celdas libres, esquivando
+--      los rectángulos. Al mover un rack las rutas cambian solas: no queda
+--      ninguna topología que mantener sincronizada a mano.
+--
+--  Por eso esta migración ELIMINA warehouse_nodes y warehouse_edges. Solo
+--  contenían la topología semilla que cargó la propia migración 08 — ningún
+--  dato ingresado por un usuario.
+--
+--  Requiere 01-08. Idempotente.
+-- =============================================================================
+
+
+-- =============================================================================
+--  BLOQUE A — DIMENSIONES DEL ALMACÉN Y GEOMETRÍA DE CADA RACK
+-- =============================================================================
+alter table public.warehouses
+  add column if not exists grid_ancho integer not null default 40,
+  add column if not exists grid_alto  integer not null default 30,
+  add column if not exists entrada_x  integer not null default 20,
+  add column if not exists entrada_y  integer not null default 28;
+
+alter table public.racks
+  add column if not exists grid_x     integer,
+  add column if not exists grid_y     integer,
+  add column if not exists grid_ancho integer not null default 14,
+  add column if not exists grid_alto  integer not null default 2;
+
+comment on column public.racks.grid_x is
+  'Esquina superior izquierda del rack sobre la grilla del almacén. El rack ocupa (grid_ancho x grid_alto) celdas y las bloquea para el cálculo de rutas.';
+comment on column public.warehouses.grid_ancho is
+  'Ancho del piso en celdas (1 celda ≈ 1 metro). El editor de layout trabaja sobre esta grilla.';
+
+
+-- =============================================================================
+--  BLOQUE B — LAYOUT INICIAL REALISTA (dos columnas de racks con pasillos)
+-- =============================================================================
+-- Se aplica ANTES de crear el trigger anti-solape a propósito: mover los racks
+-- de a uno los haría pisarse transitoriamente y el trigger abortaría la
+-- migración. El layout que se escribe acá es válido por construcción:
+--
+--     x:  3────17    21────35        (racks de 14 celdas de ancho)
+--     y:3  ███████    ███████        fila 1
+--     y:9  ███████    ███████        fila 2   (pasillo horizontal entre filas)
+--     y:15 ███████    ███████        fila 3
+--     y:28        ▲ ENTRADA          (pasillo perimetral libre)
+do $$
+declare
+  r record;
+  v_i integer;
+begin
+  for r in
+    select rk.id,
+           (row_number() over (partition by rk.warehouse_id order by rk.code) - 1)::int as n
+      from public.racks rk
+  loop
+    v_i := r.n;
+    update public.racks
+       set grid_x     = 3 + (v_i % 2) * 18,
+           grid_y     = 3 + (v_i / 2) * 6,
+           grid_ancho = 14,
+           grid_alto  = 2
+     where id = r.id;
+  end loop;
+
+  update public.warehouses set entrada_x = 20, entrada_y = 28;
+  raise notice 'Layout inicial aplicado a % racks.', (select count(*) from public.racks);
+end;
+$$;
+
+alter table public.racks
+  alter column grid_x set not null,
+  alter column grid_y set not null;
+
+alter table public.racks drop constraint if exists ck_racks_geometria;
+alter table public.racks
+  add constraint ck_racks_geometria check (
+    grid_x >= 0 and grid_y >= 0 and grid_ancho between 1 and 60 and grid_alto between 1 and 60
+  );
+
+
+-- =============================================================================
+--  BLOQUE C — UN RACK NO PUEDE SALIRSE DEL PLANO NI PISAR A OTRO
+-- =============================================================================
+-- Mismo criterio que el resto del sistema: la regla vive en la base, no en el
+-- editor. Si el arrastre del editor tiene un bug, la base no deja guardar un
+-- layout imposible.
+create or replace function public.fn_validar_geometria_rack()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_ancho_alm integer;
+  v_alto_alm  integer;
+  v_conflicto text;
+begin
+  select grid_ancho, grid_alto into v_ancho_alm, v_alto_alm
+    from public.warehouses where id = new.warehouse_id;
+
+  if new.grid_x + new.grid_ancho > v_ancho_alm or new.grid_y + new.grid_alto > v_alto_alm then
+    raise exception 'El rack % no cabe: se sale del plano del almacén (% x % celdas).',
+      new.code, v_ancho_alm, v_alto_alm
+      using errcode = 'check_violation';
+  end if;
+
+  -- Dos rectángulos se pisan solo si se solapan en LOS DOS ejes a la vez.
+  select code into v_conflicto
+    from public.racks
+   where warehouse_id = new.warehouse_id
+     and id <> new.id
+     and new.grid_x < grid_x + grid_ancho
+     and grid_x     < new.grid_x + new.grid_ancho
+     and new.grid_y < grid_y + grid_alto
+     and grid_y     < new.grid_y + new.grid_alto
+   limit 1;
+
+  if v_conflicto is not null then
+    raise exception 'El rack % se superpone con el rack %. Muévelo a un espacio libre.',
+      new.code, v_conflicto
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_racks_geometria on public.racks;
+create trigger trg_racks_geometria
+  before insert or update of grid_x, grid_y, grid_ancho, grid_alto on public.racks
+  for each row execute function public.fn_validar_geometria_rack();
+
+
+-- =============================================================================
+--  BLOQUE D — FUERA EL GRAFO DECLARADO A MANO
+-- =============================================================================
+drop table if exists public.warehouse_edges;
+drop table if exists public.warehouse_nodes;
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+select
+  w.code as almacen,
+  w.grid_ancho || ' x ' || w.grid_alto  as plano,
+  w.entrada_x || ',' || w.entrada_y      as entrada,
+  count(r.id)                            as racks,
+  coalesce(max(r.grid_x + r.grid_ancho), 0) as borde_derecho,
+  coalesce(max(r.grid_y + r.grid_alto), 0)  as borde_inferior
+from public.warehouses w
+left join public.racks r on r.warehouse_id = w.id
+group by w.code, w.grid_ancho, w.grid_alto, w.entrada_x, w.entrada_y
+order by w.code;
+-- Esperado: 3 almacenes en 40x30, entrada 20,28, y ningún borde pasando de 40/30.
 
 

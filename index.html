@@ -194,6 +194,33 @@
           <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Nivel 1 · infantil</span>
         </div>
 
+        <div class="plano-controles">
+          <button type="button" id="btnModoEdicion" class="btn-secundario btn-chico" aria-pressed="false">Editar plano</button>
+          <div class="ruta-calculadora">
+            <div class="campo">
+              <label for="campoRutaDestino">Ruta desde la entrada hasta</label>
+              <select id="campoRutaDestino"></select>
+            </div>
+            <button type="button" id="btnCalcularRuta" class="btn-primario btn-chico">Calcular ruta más corta</button>
+            <button type="button" id="btnLimpiarRuta" class="btn-secundario btn-chico" hidden>Limpiar ruta</button>
+          </div>
+        </div>
+
+        <div id="barraEdicion" class="barra-edicion" hidden>
+          <span id="estadoEdicion"></span>
+          <span class="barra-edicion-acciones">
+            <button type="button" id="btnDescartarLayout" class="btn-secundario btn-chico" hidden>Descartar cambios</button>
+            <button type="button" id="btnGuardarLayout" class="btn-primario btn-chico" hidden>Guardar layout</button>
+          </span>
+        </div>
+
+        <p id="resultadoRuta" class="contador-resultados" role="status" aria-live="polite"></p>
+
+        <div id="mapaPlano" class="mapa-plano-contenedor">
+          <p class="skeleton">Cargando plano…</p>
+        </div>
+
+        <h3 class="mapa-detalle-titulo">Detalle de posiciones</h3>
         <div id="mapaVisual" class="mapa-visual">
           <p class="skeleton">Cargando mapa…</p>
         </div>
@@ -507,5 +534,6 @@
   <script src="js/articulo-modal.js"></script>
   <script src="js/movimiento-modal.js"></script>
   <script src="js/mapa-modal.js"></script>
+  <script src="js/plano-editor.js"></script>
 </body>
 </html>

@@ -380,14 +380,16 @@ async function cargarDashboard() {
   mostrarDashboard();
   renderTopbar(perfil);
 
-  const [articulos, movimientos, mapa] = await Promise.all([
+  const [articulos, movimientos, mapa, layout] = await Promise.all([
     CatalogoAPI.listarArticulos(),
     MovimientosAPI.listar(),
     InventarioAPI.obtenerMapaAlmacen(),
+    InventarioAPI.obtenerLayout(),
   ]);
 
   renderKpis(articulos, movimientos);
   renderMovimientos(movimientos);
+  inicializarLayout(layout); // la geometría del plano no cambia al editar artículos
   inicializarMapa(mapa);
   inicializarFiltros(articulos);
 }

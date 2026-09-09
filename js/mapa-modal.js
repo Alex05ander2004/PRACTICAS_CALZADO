@@ -112,6 +112,8 @@ function aplicarFiltroMapa() {
 
   document.getElementById('contadorMapa').textContent = `${filtradas.length} de ${todoElMapa.length} posiciones`;
   renderMapaVisual(filtradas);
+  renderPlano(almacen, todoElMapa);
+  poblarSelectsRuta(almacen);
 }
 
 function inicializarMapa(mapa) {
