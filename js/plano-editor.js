@@ -11,6 +11,7 @@ let layoutRacks = [];
 let rutaActual = null;      // { almacenCode, celdas: [[x,y], ...] }
 let modoEdicion = false;
 let racksModificados = new Map(); // rackId -> { gridX, gridY, gridAncho, gridAlto }
+let entradaModificada = new Map(); // almacenId -> { x, y }
 let rackSeleccionado = null;      // id del rack cuyo panel de propiedades está abierto
 
 function inicializarLayout(layout) {
@@ -36,6 +37,55 @@ function geometriaDe(rack) {
     gridAncho: rack.grid_ancho,
     gridAlto: rack.grid_alto,
   };
+}
+
+// Lo mismo que geometriaDe, para la puerta.
+function entradaDe(almacen) {
+  return entradaModificada.get(almacen.id) ?? { x: almacen.entrada_x, y: almacen.entrada_y };
+}
+
+// Una puerta en medio del piso no es una puerta: el punto se lleva siempre a
+// la pared más cercana. Espejo exacto de fn_pegar_a_pared (migración 12), que
+// es la que manda al grabar.
+function pegarAPared(x, y, ancho, alto) {
+  const cx = Math.min(Math.max(x, 0), ancho - 1);
+  const cy = Math.min(Math.max(y, 0), alto - 1);
+  const distancias = { izquierda: cx, derecha: ancho - 1 - cx, arriba: cy, abajo: alto - 1 - cy };
+  const pared = Object.keys(distancias).reduce((a, b) => (distancias[b] < distancias[a] ? b : a));
+
+  if (pared === 'izquierda') return { x: 0, y: cy, pared };
+  if (pared === 'derecha') return { x: ancho - 1, y: cy, pared };
+  if (pared === 'arriba') return { x: cx, y: 0, pared };
+  return { x: cx, y: alto - 1, pared };
+}
+
+// La orientación de la entrada no se guarda en ninguna columna: sale de en qué
+// pared quedó, igual que el giro de un rack sale de su ancho y su largo. En las
+// paredes laterales el rótulo se escribe en vertical (lo hace el CSS) y se
+// apoya contra el borde para no quedar cortado por el overflow del plano.
+function posicionarEntrada(el, almacen, x, y) {
+  const { pared } = pegarAPared(x, y, almacen.grid_ancho, almacen.grid_alto);
+  el.classList.remove(
+    'plano-entrada--arriba', 'plano-entrada--abajo',
+    'plano-entrada--izquierda', 'plano-entrada--derecha'
+  );
+  el.classList.add(`plano-entrada--${pared}`);
+
+  if (pared === 'arriba' || pared === 'abajo') {
+    el.style.left = `${((x + 0.5) / almacen.grid_ancho) * 100}%`;
+    el.style.top = pared === 'arriba' ? '0%' : '100%';
+  } else {
+    el.style.top = `${((y + 0.5) / almacen.grid_alto) * 100}%`;
+    el.style.left = pared === 'izquierda' ? '0%' : '100%';
+  }
+}
+
+// La ruta dibujada se calculó sobre un layout que ya no es el que se ve.
+function invalidarRuta() {
+  if (!rutaActual) return;
+  rutaActual = null;
+  document.getElementById('btnLimpiarRuta').hidden = true;
+  document.getElementById('resultadoRuta').textContent = 'El layout cambió: vuelve a calcular la ruta.';
 }
 
 // =============================================================================
@@ -237,12 +287,15 @@ function renderUnPlano(almacen, mapaFilas) {
   }
 
   // Entrada
+  const puerta = entradaDe(almacen);
   const entrada = document.createElement('div');
   entrada.className = 'plano-entrada';
-  entrada.style.left = pct(almacen.entrada_x, almacen.grid_ancho);
-  entrada.style.top = pct(almacen.entrada_y, almacen.grid_alto);
-  entrada.title = 'Entrada del almacén';
+  if (entradaModificada.has(almacen.id)) entrada.classList.add('modificado');
+  entrada.title = modoEdicion
+    ? 'Entrada del almacén (arrástrala por las paredes)'
+    : 'Entrada del almacén';
   entrada.textContent = 'Entrada';
+  posicionarEntrada(entrada, almacen, puerta.x, puerta.y);
   plano.appendChild(entrada);
 
   bloque.appendChild(plano);
@@ -271,8 +324,19 @@ function renderPlano(almacenFiltro, mapaFilas) {
 
 function habilitarArrastre(plano, almacen) {
   let arrastrando = null;
+  let arrastrandoEntrada = null;
 
   plano.addEventListener('pointerdown', (e) => {
+    // La puerta se arrastra igual que un rack, pero solo recorre el perímetro.
+    const entradaEl = e.target.closest('.plano-entrada');
+    if (entradaEl) {
+      e.preventDefault();
+      entradaEl.setPointerCapture(e.pointerId);
+      arrastrandoEntrada = { el: entradaEl, caja: plano.getBoundingClientRect() };
+      entradaEl.classList.add('arrastrando');
+      return;
+    }
+
     const rackEl = e.target.closest('.plano-rack');
     if (!rackEl) return;
     e.preventDefault();
@@ -295,6 +359,16 @@ function habilitarArrastre(plano, almacen) {
   });
 
   plano.addEventListener('pointermove', (e) => {
+    if (arrastrandoEntrada) {
+      const { caja, el } = arrastrandoEntrada;
+      const x = Math.round((e.clientX - caja.left) / (caja.width / almacen.grid_ancho) - 0.5);
+      const y = Math.round((e.clientY - caja.top) / (caja.height / almacen.grid_alto) - 0.5);
+      const punto = pegarAPared(x, y, almacen.grid_ancho, almacen.grid_alto);
+      arrastrandoEntrada.punto = punto;
+      posicionarEntrada(el, almacen, punto.x, punto.y);
+      return;
+    }
+
     if (!arrastrando) return;
     const { caja, geometria, offsetX, offsetY, rackEl } = arrastrando;
     const celdaAncho = caja.width / almacen.grid_ancho;
@@ -313,6 +387,19 @@ function habilitarArrastre(plano, almacen) {
   });
 
   const soltar = () => {
+    if (arrastrandoEntrada) {
+      const { el, punto } = arrastrandoEntrada;
+      el.classList.remove('arrastrando');
+      arrastrandoEntrada = null;
+      if (punto) {
+        entradaModificada.set(almacen.id, { x: punto.x, y: punto.y });
+        el.classList.add('modificado');
+        invalidarRuta();
+        actualizarBarraEdicion();
+      }
+      return;
+    }
+
     if (!arrastrando) return;
     const { rack, geometria, nuevaX, nuevaY, rackEl } = arrastrando;
     rackEl.classList.remove('arrastrando');
@@ -328,12 +415,7 @@ function habilitarArrastre(plano, almacen) {
       racksModificados.set(rack.id, { ...geometria, gridX: nuevaX, gridY: nuevaY });
       rackEl.classList.add('modificado');
       actualizarBarraEdicion();
-      // La ruta dibujada ya no corresponde al layout que se está viendo.
-      if (rutaActual) {
-        rutaActual = null;
-        document.getElementById('resultadoRuta').textContent =
-          'El layout cambió: vuelve a calcular la ruta.';
-      }
+      invalidarRuta();
     }
     arrastrando = null;
   };
@@ -344,11 +426,19 @@ function habilitarArrastre(plano, almacen) {
 
 function actualizarBarraEdicion() {
   const n = racksModificados.size;
-  document.getElementById('btnGuardarLayout').hidden = n === 0;
-  document.getElementById('btnDescartarLayout').hidden = n === 0;
-  document.getElementById('estadoEdicion').textContent =
-    n === 0 ? 'Arrastra los racks para acomodarlos como están en la realidad.'
-            : `${n} rack${n === 1 ? '' : 's'} movido${n === 1 ? '' : 's'} sin guardar.`;
+  const puertas = entradaModificada.size;
+  const hayCambios = n > 0 || puertas > 0;
+
+  document.getElementById('btnGuardarLayout').hidden = !hayCambios;
+  document.getElementById('btnDescartarLayout').hidden = !hayCambios;
+
+  const partes = [];
+  if (n > 0) partes.push(`${n} rack${n === 1 ? '' : 's'} movido${n === 1 ? '' : 's'}`);
+  if (puertas > 0) partes.push(`${puertas} entrada${puertas === 1 ? '' : 's'} movida${puertas === 1 ? '' : 's'}`);
+
+  document.getElementById('estadoEdicion').textContent = hayCambios
+    ? `${partes.join(' y ')} sin guardar.`
+    : 'Arrastra los racks para acomodarlos como están en la realidad. La entrada se mueve igual, pero solo por las paredes.';
 }
 
 document.getElementById('btnModoEdicion').addEventListener('click', () => {
@@ -367,6 +457,7 @@ document.getElementById('btnModoEdicion').addEventListener('click', () => {
 
 document.getElementById('btnDescartarLayout').addEventListener('click', () => {
   racksModificados.clear();
+  entradaModificada.clear();
   actualizarBarraEdicion();
   renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
 });
@@ -377,6 +468,8 @@ document.getElementById('btnGuardarLayout').addEventListener('click', async () =
   boton.textContent = 'Guardando…';
 
   try {
+    // Cada entrada se borra del pendiente apenas se graba: si una falla, las
+    // ya guardadas no se vuelven a mandar al reintentar.
     for (const [rackId, geometria] of racksModificados) {
       await InventarioAPI.actualizarGeometriaRack(rackId, geometria);
       // Se refleja en la copia local para no tener que recargar todo.
@@ -387,8 +480,15 @@ document.getElementById('btnGuardarLayout').addEventListener('click', async () =
         rack.grid_ancho = geometria.gridAncho;
         rack.grid_alto = geometria.gridAlto;
       }
+      racksModificados.delete(rackId);
     }
-    racksModificados.clear();
+
+    for (const [almacenId, punto] of entradaModificada) {
+      const almacen = layoutAlmacenes.find((a) => a.id === almacenId);
+      Object.assign(almacen, await InventarioAPI.moverEntradaAlmacen(almacen.code, punto));
+      entradaModificada.delete(almacenId);
+    }
+
     mostrarToast('Layout guardado.', 'ok');
   } catch (err) {
     // Los errores de solape o de "se sale del plano" vienen del trigger de la
@@ -446,7 +546,8 @@ document.getElementById('btnCalcularRuta').addEventListener('click', () => {
   const racks = racksDe(almacen.id);
   const grilla = construirGrilla(almacen, racks);
   const metas = celdasDeAcceso(grilla, geometriaDe(rack));
-  const resultado = calcularRutaAEstrella(grilla, [almacen.entrada_x, almacen.entrada_y], metas);
+  const puerta = entradaDe(almacen);
+  const resultado = calcularRutaAEstrella(grilla, [puerta.x, puerta.y], metas);
 
   if (!resultado) {
     resultadoEl.textContent = `No hay forma de llegar a ${rack.code}: quedó encerrado por otros racks.`;
@@ -626,10 +727,7 @@ function redimensionarSeleccionado(nuevoAncho, nuevoAlto) {
   document.getElementById('campoRackAncho').value = ancho;
   document.getElementById('campoRackAlto').value = alto;
 
-  if (rutaActual) {
-    rutaActual = null;
-    document.getElementById('resultadoRuta').textContent = 'El layout cambió: vuelve a calcular la ruta.';
-  }
+  invalidarRuta();
   actualizarBarraEdicion();
   refrescarCapacidadPanel();
   repintar();

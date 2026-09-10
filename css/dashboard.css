@@ -723,7 +723,6 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 
 .plano-entrada {
   position: absolute;
-  transform: translate(-50%, -50%);
   background: var(--ink);
   color: var(--ground);
   font-size: 10px;
@@ -731,7 +730,27 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
   padding: 3px 8px;
   border-radius: 999px;
   white-space: nowrap;
+  z-index: 3; /* por encima de los racks: la puerta se agarra aunque uno la roce */
 }
+
+/* La entrada se apoya CONTRA la pared, no centrada sobre ella: el plano tiene
+   overflow hidden y centrada quedaría cortada a la mitad. En las paredes
+   laterales el rótulo se escribe en vertical, que es como se lee una puerta
+   dibujada de canto. */
+.plano-entrada--arriba     { transform: translate(-50%, 0); }
+.plano-entrada--abajo      { transform: translate(-50%, -100%); }
+.plano-entrada--izquierda  { transform: translate(0, -50%); }
+.plano-entrada--derecha    { transform: translate(-100%, -50%); }
+
+.plano-entrada--izquierda,
+.plano-entrada--derecha {
+  writing-mode: vertical-rl;
+  padding: 8px 3px;
+}
+
+.plano-entrada.modificado { outline: 2px dashed var(--accent); outline-offset: 1px; }
+.plano-piso.editando .plano-entrada { cursor: grab; }
+.plano-piso.editando .plano-entrada.arrastrando { cursor: grabbing; opacity: .75; }
 
 .plano-ruta { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .plano-ruta polyline {

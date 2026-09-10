@@ -66,6 +66,19 @@ const InventarioAPI = {
     return data;
   },
 
+  // La puerta solo existe sobre una pared: la base lleva el punto al borde más
+  // cercano y se niega si un rack está pegado ahí tapándola. La orientación no
+  // se manda ni se guarda — se deduce de en qué pared quedó.
+  async moverEntradaAlmacen(warehouseCode, { x, y }) {
+    const { data, error } = await supabaseClient.rpc('mover_entrada_almacen', {
+      p_warehouse_code: warehouseCode,
+      p_x: x,
+      p_y: y,
+    });
+    if (error) throw error;
+    return data;
+  },
+
   // Cuántas cajas de calzado entran en un rack de esas medidas con esos pisos.
   // El cálculo vive en la base (migración 11) para que la cifra que se muestra
   // en el editor sea exactamente la que se va a grabar.
