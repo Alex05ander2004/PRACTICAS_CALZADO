@@ -45,12 +45,52 @@ const InventarioAPI = {
         .order('code'),
       supabaseClient
         .from('racks')
-        .select('id, code, warehouse_id, grid_x, grid_y, grid_ancho, grid_alto')
+        .select('id, code, warehouse_id, grid_x, grid_y, grid_ancho, grid_alto, niveles')
         .order('code'),
     ]);
     if (almacenes.error) throw almacenes.error;
     if (racks.error) throw racks.error;
     return { almacenes: almacenes.data, racks: racks.data };
+  },
+
+  // Medir el local y cargarlo. Se niega a achicar el plano por debajo de un
+  // rack existente (la función nombra cuáles estorban); la entrada, en cambio,
+  // se reacomoda sola porque es una referencia del plano, no mercadería.
+  async redimensionarAlmacen(warehouseCode, { gridAncho, gridAlto }) {
+    const { data, error } = await supabaseClient.rpc('redimensionar_almacen', {
+      p_warehouse_code: warehouseCode,
+      p_grid_ancho: gridAncho,
+      p_grid_alto: gridAlto,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // Cuántas cajas de calzado entran en un rack de esas medidas con esos pisos.
+  // El cálculo vive en la base (migración 11) para que la cifra que se muestra
+  // en el editor sea exactamente la que se va a grabar.
+  async estimarCapacidadRack({ gridAncho, gridAlto, niveles, slotsPorNivel }) {
+    const { data, error } = await supabaseClient.rpc('estimar_capacidad_rack', {
+      p_grid_ancho: gridAncho,
+      p_grid_alto: gridAlto,
+      p_niveles: niveles,
+      p_slots_por_nivel: slotsPorNivel,
+    });
+    if (error) throw error;
+    return data; // { frente, fondo, posiciones, cajas, por_nivel: [{nivel, cajas}] }
+  },
+
+  // Declarar los pisos del rack y cuántos casilleros tiene cada uno. Solo
+  // agrega los que faltan: nunca renumera una posición existente, porque su
+  // código ya aparece en el kardex.
+  async configurarRack(rackId, { niveles, slotsPorNivel }) {
+    const { data, error } = await supabaseClient.rpc('configurar_rack', {
+      p_rack_id: rackId,
+      p_niveles: niveles,
+      p_slots_por_nivel: slotsPorNivel,
+    });
+    if (error) throw error;
+    return data; // { estado, posiciones, cajas, mensaje }
   },
 
   // Guarda la posición/tamaño de un rack movido en el editor. Si el resultado
@@ -64,6 +104,33 @@ const InventarioAPI = {
       .select()
       .single();
 
+    if (error) throw error;
+    return data;
+  },
+
+  // Crea el rack Y sus posiciones en una sola transacción: un rack sin
+  // posiciones es un mueble que no puede guardar nada. Las posiciones se
+  // reparten entre los niveles, y el nivel 1 de cualquier rack es el que
+  // admite calzado infantil (migración 04).
+  async crearRack({ warehouseCode, code, gridX, gridY, gridAncho, gridAlto, niveles, slotsPorNivel }) {
+    const { data, error } = await supabaseClient.rpc('crear_rack', {
+      p_warehouse_code: warehouseCode,
+      p_code: code,
+      p_grid_x: gridX,
+      p_grid_y: gridY,
+      p_grid_ancho: gridAncho,
+      p_grid_alto: gridAlto,
+      p_niveles: niveles,
+      p_slots_por_nivel: slotsPorNivel,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // Se niega si el rack tiene mercadería ubicada o historial de movimientos:
+  // borrarlo dejaría el kardex apuntando a posiciones inexistentes.
+  async eliminarRack(rackId) {
+    const { data, error } = await supabaseClient.rpc('eliminar_rack', { p_rack_id: rackId });
     if (error) throw error;
     return data;
   },

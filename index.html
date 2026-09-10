@@ -209,9 +209,49 @@
         <div id="barraEdicion" class="barra-edicion" hidden>
           <span id="estadoEdicion"></span>
           <span class="barra-edicion-acciones">
+            <button type="button" id="btnNuevoRack" class="btn-secundario btn-chico">+ Nuevo rack</button>
             <button type="button" id="btnDescartarLayout" class="btn-secundario btn-chico" hidden>Descartar cambios</button>
             <button type="button" id="btnGuardarLayout" class="btn-primario btn-chico" hidden>Guardar layout</button>
           </span>
+        </div>
+
+        <div id="panelAlmacen" class="panel-rack" hidden>
+          <span class="panel-rack-titulo" id="panelAlmacenTitulo"></span>
+          <div class="campo campo-chico">
+            <label for="campoAlmacenAncho">Ancho (m)</label>
+            <input id="campoAlmacenAncho" type="number" min="10" max="80" step="1" />
+          </div>
+          <div class="campo campo-chico">
+            <label for="campoAlmacenAlto">Largo (m)</label>
+            <input id="campoAlmacenAlto" type="number" min="10" max="80" step="1" />
+          </div>
+          <button type="button" id="btnAplicarTamanoAlmacen" class="btn-secundario btn-chico">Aplicar tamaño</button>
+          <span id="panelAlmacenNota" class="panel-rack-nota"></span>
+        </div>
+
+        <div id="panelRack" class="panel-rack" hidden>
+          <span class="panel-rack-titulo" id="panelRackTitulo"></span>
+          <div class="campo campo-chico">
+            <label for="campoRackAncho">Ancho (m)</label>
+            <input id="campoRackAncho" type="number" min="1" max="60" step="1" />
+          </div>
+          <div class="campo campo-chico">
+            <label for="campoRackAlto">Largo (m)</label>
+            <input id="campoRackAlto" type="number" min="1" max="60" step="1" />
+          </div>
+          <div class="campo campo-chico">
+            <label for="campoRackNiveles">Niveles</label>
+            <input id="campoRackNiveles" type="number" min="1" max="8" step="1" />
+          </div>
+          <div class="campo campo-chico">
+            <label for="campoRackSlots">Posiciones/nivel</label>
+            <input id="campoRackSlots" type="number" min="1" max="40" step="1" />
+          </div>
+          <button type="button" id="btnAplicarNivelesRack" class="btn-secundario btn-chico">Aplicar niveles</button>
+          <button type="button" id="btnRotarRack" class="btn-secundario btn-chico">Girar 90°</button>
+          <button type="button" id="btnEliminarRack" class="btn-peligro btn-chico">Eliminar</button>
+          <button type="button" id="btnDeseleccionarRack" class="btn-accion">Cerrar</button>
+          <span id="panelRackCapacidad" class="panel-rack-nota" role="status" aria-live="polite"></span>
         </div>
 
         <p id="resultadoRuta" class="contador-resultados" role="status" aria-live="polite"></p>
@@ -514,6 +554,56 @@
       <div class="modal-acciones">
         <button type="button" id="btnCancelarUbicacion" class="btn-secundario">Cancelar</button>
         <button type="submit" id="btnGuardarUbicacion" class="btn-primario">Asignar posición</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: NUEVO RACK                                             -->
+  <!-- ============================================================ -->
+  <div id="modalNuevoRack" class="modal-backdrop" hidden>
+    <form id="formNuevoRack" class="modal-tarjeta modal-tarjeta--chica" novalidate>
+      <div class="modal-header">
+        <h3>Nuevo rack</h3>
+        <button type="button" id="btnCerrarModalRack" class="btn-cerrar" aria-label="Cerrar">×</button>
+      </div>
+
+      <div id="modalRackError" class="login-error" role="alert" tabindex="-1" hidden></div>
+
+      <div class="campo">
+        <label for="campoNuevoRackCodigo">Código</label>
+        <input id="campoNuevoRackCodigo" type="text" placeholder="RACK-09" required />
+      </div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoNuevoRackAncho">Ancho (m)</label>
+          <input id="campoNuevoRackAncho" type="number" min="1" max="60" step="1" value="14" />
+        </div>
+        <div class="campo">
+          <label for="campoNuevoRackAlto">Largo (m)</label>
+          <input id="campoNuevoRackAlto" type="number" min="1" max="60" step="1" value="2" />
+        </div>
+      </div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoNuevoRackNiveles">Niveles (pisos)</label>
+          <input id="campoNuevoRackNiveles" type="number" min="1" max="8" step="1" value="3" />
+        </div>
+        <div class="campo">
+          <label for="campoNuevoRackPosiciones">Posiciones por nivel</label>
+          <input id="campoNuevoRackPosiciones" type="number" min="1" max="40" step="1" value="7" />
+        </div>
+      </div>
+
+      <p id="estimacionNuevoRack" class="modal-mensaje modal-mensaje--dato" role="status" aria-live="polite"></p>
+
+      <p class="modal-mensaje">El nivel 1 es el del piso: ahí solo entra calzado infantil, y como la caja de niño es más chica, rinde más cajas que los de arriba. Se coloca en el primer hueco libre del plano; después lo arrastras a su sitio.</p>
+
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarNuevoRack" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnGuardarNuevoRack" class="btn-primario">Crear rack</button>
       </div>
     </form>
   </div>

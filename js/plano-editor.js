@@ -11,6 +11,7 @@ let layoutRacks = [];
 let rutaActual = null;      // { almacenCode, celdas: [[x,y], ...] }
 let modoEdicion = false;
 let racksModificados = new Map(); // rackId -> { gridX, gridY, gridAncho, gridAlto }
+let rackSeleccionado = null;      // id del rack cuyo panel de propiedades está abierto
 
 function inicializarLayout(layout) {
   layoutAlmacenes = layout.almacenes;
@@ -163,8 +164,29 @@ function calcularRutaAEstrella(grilla, inicio, metas) {
 function ocupacionDelRack(mapaFilas, almacenCode, rackCode) {
   const posiciones = mapaFilas.filter((f) => f.almacen_code === almacenCode && f.rack === rackCode);
   const libres = posiciones.filter((f) => f.estado_ocupacion === null).length;
-  return { total: posiciones.length, libres };
+  const capacidad = posiciones.reduce((suma, f) => suma + (f.capacity_units ?? 0), 0);
+  const ocupado = posiciones.reduce((suma, f) => suma + (f.unidades ?? 0), 0);
+  return { total: posiciones.length, libres, capacidad, ocupado };
 }
+
+// Cómo está repartido HOY un rack en pisos y casilleros. Los niveles salen de
+// la columna del rack (es una propiedad del mueble); las posiciones por nivel
+// se cuentan, porque un rack heredado puede tener unos niveles mapeados y
+// otros todavía no.
+function configuracionDeRack(rack, almacenCode) {
+  const posiciones = todoElMapa.filter((f) => f.almacen_code === almacenCode && f.rack === rack.code);
+  const porNivel = new Map();
+  for (const f of posiciones) {
+    const nivel = f.level ?? 2;
+    porNivel.set(nivel, (porNivel.get(nivel) ?? 0) + 1);
+  }
+  return {
+    niveles: rack.niveles ?? Math.max(1, ...porNivel.keys(), 1),
+    slots: porNivel.size ? Math.max(...porNivel.values()) : 7,
+  };
+}
+
+const formatearNumero = (n) => Number(n ?? 0).toLocaleString('es-PE');
 
 function renderUnPlano(almacen, mapaFilas) {
   const bloque = document.createElement('div');
@@ -194,17 +216,22 @@ function renderUnPlano(almacen, mapaFilas) {
   // Racks
   for (const rack of racksDe(almacen.id)) {
     const g = geometriaDe(rack);
-    const { total, libres } = ocupacionDelRack(mapaFilas, almacen.code, rack.code);
+    const { total, libres, capacidad, ocupado } = ocupacionDelRack(mapaFilas, almacen.code, rack.code);
 
     const el = document.createElement('div');
     el.className = 'plano-rack' + (libres === 0 && total > 0 ? ' lleno' : '');
     if (racksModificados.has(rack.id)) el.classList.add('modificado');
+    if (rackSeleccionado === rack.id) el.classList.add('seleccionado');
     el.dataset.rackId = rack.id;
     el.style.left = pct(g.gridX, almacen.grid_ancho);
     el.style.top = pct(g.gridY, almacen.grid_alto);
     el.style.width = pct(g.gridAncho, almacen.grid_ancho);
     el.style.height = pct(g.gridAlto, almacen.grid_alto);
-    el.title = `${rack.code} — ${libres} de ${total} posiciones libres${modoEdicion ? ' (arrastra para mover)' : ''}`;
+    el.title =
+      `${rack.code} — ${g.gridAncho} × ${g.gridAlto} m, ${rack.niveles ?? 1} niveles\n` +
+      `${libres} de ${total} posiciones libres\n` +
+      `${formatearNumero(ocupado)} de ${formatearNumero(capacidad)} cajas` +
+      (modoEdicion ? '\n(arrastra para mover)' : '');
     el.innerHTML = `<span class="plano-rack-etiqueta">${rack.code}</span>`;
     plano.appendChild(el);
   }
@@ -290,6 +317,13 @@ function habilitarArrastre(plano, almacen) {
     const { rack, geometria, nuevaX, nuevaY, rackEl } = arrastrando;
     rackEl.classList.remove('arrastrando');
 
+    // Si no se movió, el gesto fue un clic: se interpreta como seleccionar.
+    if (nuevaX === undefined || (nuevaX === geometria.gridX && nuevaY === geometria.gridY)) {
+      arrastrando = null;
+      seleccionarRack(rack.id);
+      return;
+    }
+
     if (nuevaX !== undefined && (nuevaX !== geometria.gridX || nuevaY !== geometria.gridY)) {
       racksModificados.set(rack.id, { ...geometria, gridX: nuevaX, gridY: nuevaY });
       rackEl.classList.add('modificado');
@@ -322,6 +356,11 @@ document.getElementById('btnModoEdicion').addEventListener('click', () => {
   document.getElementById('btnModoEdicion').textContent = modoEdicion ? 'Salir del editor' : 'Editar plano';
   document.getElementById('btnModoEdicion').setAttribute('aria-pressed', String(modoEdicion));
   document.getElementById('barraEdicion').hidden = !modoEdicion;
+  if (!modoEdicion) {
+    rackSeleccionado = null;
+    document.getElementById('panelRack').hidden = true;
+  }
+  actualizarPanelAlmacen();
   actualizarBarraEdicion();
   renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
 });
@@ -428,3 +467,344 @@ document.getElementById('btnLimpiarRuta').addEventListener('click', () => {
   document.getElementById('btnLimpiarRuta').hidden = true;
   renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
 });
+
+// =============================================================================
+//  SELECCIÓN: TAMAÑO, GIRO Y ELIMINACIÓN DE UN RACK
+// =============================================================================
+
+function repintar() {
+  renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
+}
+
+function seleccionarRack(rackId) {
+  rackSeleccionado = rackId;
+  const rack = layoutRacks.find((r) => r.id === rackId);
+  if (!rack) return;
+
+  const almacen = layoutAlmacenes.find((a) => a.id === rack.warehouse_id);
+  const g = geometriaDe(rack);
+  const config = configuracionDeRack(rack, almacen.code);
+
+  document.getElementById('panelRackTitulo').textContent = rack.code;
+  document.getElementById('campoRackAncho').value = g.gridAncho;
+  document.getElementById('campoRackAlto').value = g.gridAlto;
+  document.getElementById('campoRackNiveles').value = config.niveles;
+  document.getElementById('campoRackSlots').value = config.slots;
+  document.getElementById('panelRack').hidden = false;
+  refrescarCapacidadPanel();
+  repintar();
+}
+
+function deseleccionarRack() {
+  rackSeleccionado = null;
+  document.getElementById('panelRack').hidden = true;
+  repintar();
+}
+
+// Lo que hay hoy vs. lo que daría la configuración escrita en el panel. La
+// estimación la calcula la base (misma función que usa al grabar), así que la
+// cifra que se ve acá es la que va a quedar.
+async function refrescarCapacidadPanel() {
+  const nota = document.getElementById('panelRackCapacidad');
+  const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
+  if (!rack) return;
+
+  const almacen = layoutAlmacenes.find((a) => a.id === rack.warehouse_id);
+  const g = geometriaDe(rack);
+  const { total, capacidad } = ocupacionDelRack(todoElMapa, almacen.code, rack.code);
+  const niveles = parseInt(document.getElementById('campoRackNiveles').value, 10) || 1;
+  const slots = parseInt(document.getElementById('campoRackSlots').value, 10) || 1;
+
+  nota.textContent = `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas. Calculando…`;
+  try {
+    const est = await InventarioAPI.estimarCapacidadRack({
+      gridAncho: g.gridAncho, gridAlto: g.gridAlto, niveles, slotsPorNivel: slots,
+    });
+    const detalle = (est.por_nivel ?? [])
+      .map((n) => `n${n.nivel}: ${formatearNumero(n.cajas)}`)
+      .join(' · ');
+    nota.textContent =
+      `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas. ` +
+      `Con ${niveles} niveles × ${slots}: ${est.posiciones} posiciones, ${formatearNumero(est.cajas)} cajas (${detalle}).`;
+  } catch (err) {
+    nota.textContent = `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas.`;
+  }
+}
+
+document.getElementById('campoRackNiveles').addEventListener('change', refrescarCapacidadPanel);
+document.getElementById('campoRackSlots').addEventListener('change', refrescarCapacidadPanel);
+
+document.getElementById('btnAplicarNivelesRack').addEventListener('click', async () => {
+  const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
+  if (!rack) return;
+
+  const boton = document.getElementById('btnAplicarNivelesRack');
+  boton.disabled = true;
+  boton.textContent = 'Aplicando…';
+  try {
+    const resultado = await InventarioAPI.configurarRack(rack.id, {
+      niveles: parseInt(document.getElementById('campoRackNiveles').value, 10),
+      slotsPorNivel: parseInt(document.getElementById('campoRackSlots').value, 10),
+    });
+    mostrarToast(resultado.mensaje ?? 'Rack reconfigurado.', 'ok');
+    await recargarLayout();
+    seleccionarRack(rack.id);
+  } catch (err) {
+    // "la posición X tiene historial" viene de la base con el detalle exacto.
+    mostrarToast(err.message ?? 'No se pudo reconfigurar el rack.', 'bad');
+  } finally {
+    boton.disabled = false;
+    boton.textContent = 'Aplicar niveles';
+  }
+});
+
+// =============================================================================
+//  TAMAÑO DEL ALMACÉN
+// =============================================================================
+
+// Solo tiene sentido con UN almacén a la vista: "aplicar 30 x 20" a los tres a
+// la vez sería casi siempre un accidente.
+function actualizarPanelAlmacen() {
+  const panel = document.getElementById('panelAlmacen');
+  const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
+
+  if (!modoEdicion || !almacen) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  document.getElementById('panelAlmacenTitulo').textContent = almacen.name;
+  document.getElementById('campoAlmacenAncho').value = almacen.grid_ancho;
+  document.getElementById('campoAlmacenAlto').value = almacen.grid_alto;
+  document.getElementById('panelAlmacenNota').textContent =
+    `${almacen.grid_ancho * almacen.grid_alto} m² de piso. Entre 10 y 80 m por lado.`;
+}
+
+document.getElementById('filtroMapaAlmacen').addEventListener('change', actualizarPanelAlmacen);
+
+document.getElementById('btnAplicarTamanoAlmacen').addEventListener('click', async () => {
+  const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
+  if (!almacen) return;
+
+  const boton = document.getElementById('btnAplicarTamanoAlmacen');
+  boton.disabled = true;
+  boton.textContent = 'Aplicando…';
+  try {
+    const actualizado = await InventarioAPI.redimensionarAlmacen(almacen.code, {
+      gridAncho: parseInt(document.getElementById('campoAlmacenAncho').value, 10),
+      gridAlto: parseInt(document.getElementById('campoAlmacenAlto').value, 10),
+    });
+    Object.assign(almacen, actualizado);
+    // La ruta dibujada se calculó sobre la grilla anterior.
+    rutaActual = null;
+    document.getElementById('btnLimpiarRuta').hidden = true;
+    mostrarToast(`${almacen.name}: ${actualizado.grid_ancho} × ${actualizado.grid_alto} m.`, 'ok');
+    actualizarPanelAlmacen();
+    repintar();
+  } catch (err) {
+    // Si algún rack quedaría fuera del plano, la base los nombra.
+    mostrarToast(err.message ?? 'No se pudo cambiar el tamaño del almacén.', 'bad');
+    actualizarPanelAlmacen();
+  } finally {
+    boton.disabled = false;
+    boton.textContent = 'Aplicar tamaño';
+  }
+});
+
+// Cambiar el tamaño puede sacar el rack del plano; se recorta antes de
+// tocarlo para que el editor no proponga algo que la base va a rechazar.
+function redimensionarSeleccionado(nuevoAncho, nuevoAlto) {
+  const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
+  if (!rack) return;
+  const almacen = layoutAlmacenes.find((a) => a.id === rack.warehouse_id);
+  const g = geometriaDe(rack);
+
+  const ancho = Math.max(1, Math.min(nuevoAncho, almacen.grid_ancho - g.gridX));
+  const alto = Math.max(1, Math.min(nuevoAlto, almacen.grid_alto - g.gridY));
+
+  racksModificados.set(rack.id, { ...g, gridAncho: ancho, gridAlto: alto });
+  document.getElementById('campoRackAncho').value = ancho;
+  document.getElementById('campoRackAlto').value = alto;
+
+  if (rutaActual) {
+    rutaActual = null;
+    document.getElementById('resultadoRuta').textContent = 'El layout cambió: vuelve a calcular la ruta.';
+  }
+  actualizarBarraEdicion();
+  refrescarCapacidadPanel();
+  repintar();
+}
+
+document.getElementById('campoRackAncho').addEventListener('change', (e) => {
+  redimensionarSeleccionado(parseInt(e.target.value, 10) || 1, parseInt(document.getElementById('campoRackAlto').value, 10) || 1);
+});
+document.getElementById('campoRackAlto').addEventListener('change', (e) => {
+  redimensionarSeleccionado(parseInt(document.getElementById('campoRackAncho').value, 10) || 1, parseInt(e.target.value, 10) || 1);
+});
+
+// Girar 90° un rectángulo alineado a los ejes es exactamente intercambiar
+// ancho y largo — por eso no hay ninguna columna "orientación" que mantener:
+// sería estado duplicado que se puede desincronizar.
+document.getElementById('btnRotarRack').addEventListener('click', () => {
+  const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
+  if (!rack) return;
+  const g = geometriaDe(rack);
+  redimensionarSeleccionado(g.gridAlto, g.gridAncho);
+});
+
+document.getElementById('btnDeseleccionarRack').addEventListener('click', deseleccionarRack);
+
+document.getElementById('btnEliminarRack').addEventListener('click', async () => {
+  const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
+  if (!rack) return;
+
+  const boton = document.getElementById('btnEliminarRack');
+  boton.disabled = true;
+  try {
+    const resultado = await InventarioAPI.eliminarRack(rack.id);
+    mostrarToast(resultado.mensaje ?? 'Rack eliminado.', 'ok');
+    racksModificados.delete(rack.id);
+    deseleccionarRack();
+    await recargarLayout();
+  } catch (err) {
+    // Si el rack tiene mercadería o historial, el mensaje viene de la función
+    // de la base con el detalle exacto: se muestra tal cual.
+    mostrarToast(err.message ?? 'No se pudo eliminar el rack.', 'bad');
+  } finally {
+    boton.disabled = false;
+  }
+});
+
+// =============================================================================
+//  CREAR UN RACK
+// =============================================================================
+
+// Busca el primer hueco donde quepa un rectángulo de ese tamaño, recorriendo
+// el plano de arriba a abajo y de izquierda a derecha.
+function primerHuecoLibre(almacen, ancho, alto) {
+  const racks = racksDe(almacen.id).map(geometriaDe);
+  for (let y = 0; y <= almacen.grid_alto - alto; y++) {
+    for (let x = 0; x <= almacen.grid_ancho - ancho; x++) {
+      const chocaConAlguno = racks.some(
+        (g) =>
+          x < g.gridX + g.gridAncho &&
+          g.gridX < x + ancho &&
+          y < g.gridY + g.gridAlto &&
+          g.gridY < y + alto
+      );
+      if (!chocaConAlguno) return { x, y };
+    }
+  }
+  return null;
+}
+
+function siguienteCodigoRack(almacen) {
+  const usados = new Set(racksDe(almacen.id).map((r) => r.code));
+  for (let i = 1; i <= 99; i++) {
+    const codigo = `RACK-${String(i).padStart(2, '0')}`;
+    if (!usados.has(codigo)) return codigo;
+  }
+  return '';
+}
+
+document.getElementById('btnNuevoRack').addEventListener('click', () => {
+  const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
+  if (!almacen) {
+    mostrarToast('Elige primero un almacén en el filtro de arriba.', 'bad');
+    return;
+  }
+  document.getElementById('formNuevoRack').reset();
+  document.getElementById('modalRackError').hidden = true;
+  document.getElementById('campoNuevoRackCodigo').value = siguienteCodigoRack(almacen);
+  document.getElementById('campoNuevoRackAncho').value = 14;
+  document.getElementById('campoNuevoRackAlto').value = 2;
+  document.getElementById('campoNuevoRackNiveles').value = 3;
+  document.getElementById('campoNuevoRackPosiciones').value = 7;
+  refrescarEstimacionNuevoRack();
+  mostrarModal('modalNuevoRack');
+});
+
+// Responde "¿cuánto guarda un rack así?" antes de crearlo. La cuenta la hace
+// la base, que es la misma que se aplicará al grabar.
+async function refrescarEstimacionNuevoRack() {
+  const salida = document.getElementById('estimacionNuevoRack');
+  const leer = (id) => parseInt(document.getElementById(id).value, 10) || 1;
+
+  salida.textContent = 'Calculando capacidad…';
+  try {
+    const est = await InventarioAPI.estimarCapacidadRack({
+      gridAncho: leer('campoNuevoRackAncho'),
+      gridAlto: leer('campoNuevoRackAlto'),
+      niveles: leer('campoNuevoRackNiveles'),
+      slotsPorNivel: leer('campoNuevoRackPosiciones'),
+    });
+    const detalle = (est.por_nivel ?? [])
+      .map((n) => `nivel ${n.nivel}: ${formatearNumero(n.cajas)}`)
+      .join(' · ');
+    salida.textContent = `${est.posiciones} posiciones · ${formatearNumero(est.cajas)} cajas — ${detalle}`;
+  } catch (err) {
+    salida.textContent = '';
+  }
+}
+
+['campoNuevoRackAncho', 'campoNuevoRackAlto', 'campoNuevoRackNiveles', 'campoNuevoRackPosiciones']
+  .forEach((id) => document.getElementById(id).addEventListener('change', refrescarEstimacionNuevoRack));
+
+const cerrarModalRack = () => ocultarModal('modalNuevoRack');
+document.getElementById('btnCerrarModalRack').addEventListener('click', cerrarModalRack);
+document.getElementById('btnCancelarNuevoRack').addEventListener('click', cerrarModalRack);
+document.getElementById('modalNuevoRack').addEventListener('click', (e) => {
+  if (e.target.id === 'modalNuevoRack') cerrarModalRack();
+});
+
+document.getElementById('formNuevoRack').addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const boton = document.getElementById('btnGuardarNuevoRack');
+  const errorEl = document.getElementById('modalRackError');
+  errorEl.hidden = true;
+  boton.disabled = true;
+  boton.textContent = 'Creando…';
+
+  try {
+    const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
+    if (!almacen) throw new Error('Elige un almacén antes de crear un rack.');
+
+    const ancho = parseInt(document.getElementById('campoNuevoRackAncho').value, 10);
+    const alto = parseInt(document.getElementById('campoNuevoRackAlto').value, 10);
+    const hueco = primerHuecoLibre(almacen, ancho, alto);
+    if (!hueco) throw new Error(`No queda espacio en el plano para un rack de ${ancho} × ${alto} m.`);
+
+    await InventarioAPI.crearRack({
+      warehouseCode: almacen.code,
+      code: document.getElementById('campoNuevoRackCodigo').value.trim().toUpperCase(),
+      gridX: hueco.x,
+      gridY: hueco.y,
+      gridAncho: ancho,
+      gridAlto: alto,
+      niveles: parseInt(document.getElementById('campoNuevoRackNiveles').value, 10),
+      slotsPorNivel: parseInt(document.getElementById('campoNuevoRackPosiciones').value, 10),
+    });
+
+    cerrarModalRack();
+    mostrarToast('Rack creado. Arrástralo a su lugar en el plano.', 'ok');
+    await recargarLayout();
+  } catch (err) {
+    errorEl.textContent = err.message ?? 'No se pudo crear el rack.';
+    errorEl.hidden = false;
+    errorEl.focus();
+  } finally {
+    boton.disabled = false;
+    boton.textContent = 'Crear rack';
+  }
+});
+
+// Vuelve a traer la geometría después de crear o eliminar un rack. Se trae
+// también el mapa de posiciones porque un rack nuevo llega con las suyas.
+async function recargarLayout() {
+  const [layout, mapa] = await Promise.all([
+    InventarioAPI.obtenerLayout(),
+    InventarioAPI.obtenerMapaAlmacen(),
+  ]);
+  inicializarLayout(layout);
+  inicializarMapa(mapa); // ya repinta el plano y el detalle
+}
