@@ -178,6 +178,7 @@ declare
   v_nivel  integer;
   v_faltan integer;
   v_idx    integer;
+  v_donde  text;
   v_min    integer := public.fn_niveles_infantiles() + 1;
 begin
   if p_niveles not between v_min and 8 then
@@ -197,7 +198,11 @@ begin
     raise exception 'El rack no existe.';
   end if;
 
-  select right(w.code, 1) into v_letra from public.warehouses w where w.id = v_rack.warehouse_id;
+  -- El código de almacén se trae junto a la letra para que los errores puedan
+  -- decir de qué RACK-07 hablan: el código de rack se repite entre almacenes.
+  select right(w.code, 1), w.code || ' · ' || v_rack.code
+    into v_letra, v_donde
+    from public.warehouses w where w.id = v_rack.warehouse_id;
   v_num := right(v_rack.code, 2);
 
   -- Niveles que se van: solo si están vacíos de presente y de pasado.
@@ -210,7 +215,7 @@ begin
        or exists (select 1 from public.stock_ledger      where position_id = v_pos.id)
     then
       raise exception 'No se puede bajar % a % niveles: la posición % tiene historial de movimientos.',
-        v_rack.code, p_niveles, v_pos.code;
+        v_donde, p_niveles, v_pos.code;
     end if;
     delete from public.positions where id = v_pos.id;
   end loop;
@@ -231,7 +236,7 @@ begin
        );
 
       if v_idx is null then
-        raise exception 'El rack % ya usó los 99 códigos de posición disponibles.', v_rack.code;
+        raise exception 'El rack % ya usó los 99 códigos de posición disponibles.', v_donde;
       end if;
 
       insert into public.positions (rack_id, code, capacity_units, level, slot)
@@ -272,7 +277,7 @@ begin
   for r in
     select id, code, slots from (
       select rk.id,
-             rk.code,
+             w.code || ' · ' || rk.code as code,
              -- El nivel más poblado manda: si quedaron desparejos, ampliar al
              -- mayor completa los huecos en vez de dejarlos a medias.
              -- El ::integer no es decorativo: count(*) devuelve bigint y
@@ -280,6 +285,7 @@ begin
              -- hay sobrecarga que coincida y la llamada ni siquiera resuelve.
              coalesce(max(p.cuantas), 1)::integer as slots
         from public.racks rk
+        join public.warehouses w on w.id = rk.warehouse_id
         left join (
           select rack_id, level, count(*) as cuantas
             from public.positions
@@ -287,7 +293,7 @@ begin
            group by rack_id, level
         ) p on p.rack_id = rk.id
        where rk.niveles < v_min
-       group by rk.id, rk.code
+       group by rk.id, w.code, rk.code
     ) pendientes
   loop
     raise notice 'Ampliando % a % niveles con % casilleros por nivel', r.code, v_min, r.slots;
@@ -304,10 +310,11 @@ do $bloque$
 declare
   v_cortos text;
 begin
-  select string_agg(code || ' (' || niveles || ')', ', ' order by code)
+  select string_agg(w.code || ' · ' || r.code || ' (' || r.niveles || ')', ', ' order by w.code, r.code)
     into v_cortos
-    from public.racks
-   where niveles < public.fn_niveles_infantiles() + 1;
+    from public.racks r
+    join public.warehouses w on w.id = r.warehouse_id
+   where r.niveles < public.fn_niveles_infantiles() + 1;
 
   if v_cortos is not null then
     raise exception 'Estos racks siguen por debajo de % niveles y el bloque anterior no pudo ampliarlos: %. Revisa el error que dio arriba antes de reintentar.',

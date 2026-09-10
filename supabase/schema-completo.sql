@@ -19,6 +19,8 @@
 --     15_cajas_reales_y_niveles.sql -> cajas reales, infantil en 2 niveles, minimo 3 por rack
 --     16_ubicacion_en_movimientos.sql -> la vista de movimientos expone rack y posicion
 --     17_reubicar_por_nivel.sql     -> lista de reubicaciones pendientes y mover atomico
+--     18_reubicar_repartiendo.sql   -> reubicar repartiendo en varios casilleros
+--     19_girar_la_caja.sql          -> probar las dos orientaciones de la caja
 --
 --  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
 --  vez sobre una base vacía. Es idempotente. Requiere PostgreSQL 15+.
@@ -5006,6 +5008,7 @@ declare
   v_nivel  integer;
   v_faltan integer;
   v_idx    integer;
+  v_donde  text;
   v_min    integer := public.fn_niveles_infantiles() + 1;
 begin
   if p_niveles not between v_min and 8 then
@@ -5025,7 +5028,11 @@ begin
     raise exception 'El rack no existe.';
   end if;
 
-  select right(w.code, 1) into v_letra from public.warehouses w where w.id = v_rack.warehouse_id;
+  -- El código de almacén se trae junto a la letra para que los errores puedan
+  -- decir de qué RACK-07 hablan: el código de rack se repite entre almacenes.
+  select right(w.code, 1), w.code || ' · ' || v_rack.code
+    into v_letra, v_donde
+    from public.warehouses w where w.id = v_rack.warehouse_id;
   v_num := right(v_rack.code, 2);
 
   -- Niveles que se van: solo si están vacíos de presente y de pasado.
@@ -5038,7 +5045,7 @@ begin
        or exists (select 1 from public.stock_ledger      where position_id = v_pos.id)
     then
       raise exception 'No se puede bajar % a % niveles: la posición % tiene historial de movimientos.',
-        v_rack.code, p_niveles, v_pos.code;
+        v_donde, p_niveles, v_pos.code;
     end if;
     delete from public.positions where id = v_pos.id;
   end loop;
@@ -5059,7 +5066,7 @@ begin
        );
 
       if v_idx is null then
-        raise exception 'El rack % ya usó los 99 códigos de posición disponibles.', v_rack.code;
+        raise exception 'El rack % ya usó los 99 códigos de posición disponibles.', v_donde;
       end if;
 
       insert into public.positions (rack_id, code, capacity_units, level, slot)
@@ -5100,7 +5107,7 @@ begin
   for r in
     select id, code, slots from (
       select rk.id,
-             rk.code,
+             w.code || ' · ' || rk.code as code,
              -- El nivel más poblado manda: si quedaron desparejos, ampliar al
              -- mayor completa los huecos en vez de dejarlos a medias.
              -- El ::integer no es decorativo: count(*) devuelve bigint y
@@ -5108,6 +5115,7 @@ begin
              -- hay sobrecarga que coincida y la llamada ni siquiera resuelve.
              coalesce(max(p.cuantas), 1)::integer as slots
         from public.racks rk
+        join public.warehouses w on w.id = rk.warehouse_id
         left join (
           select rack_id, level, count(*) as cuantas
             from public.positions
@@ -5115,7 +5123,7 @@ begin
            group by rack_id, level
         ) p on p.rack_id = rk.id
        where rk.niveles < v_min
-       group by rk.id, rk.code
+       group by rk.id, w.code, rk.code
     ) pendientes
   loop
     raise notice 'Ampliando % a % niveles con % casilleros por nivel', r.code, v_min, r.slots;
@@ -5132,10 +5140,11 @@ do $bloque$
 declare
   v_cortos text;
 begin
-  select string_agg(code || ' (' || niveles || ')', ', ' order by code)
+  select string_agg(w.code || ' · ' || r.code || ' (' || r.niveles || ')', ', ' order by w.code, r.code)
     into v_cortos
-    from public.racks
-   where niveles < public.fn_niveles_infantiles() + 1;
+    from public.racks r
+    join public.warehouses w on w.id = r.warehouse_id
+   where r.niveles < public.fn_niveles_infantiles() + 1;
 
   if v_cortos is not null then
     raise exception 'Estos racks siguen por debajo de % niveles y el bloque anterior no pudo ampliarlos: %. Revisa el error que dio arriba antes de reintentar.',
@@ -5538,3 +5547,306 @@ select
 from public.v_reubicaciones_pendientes
 group by almacen_code, rack, publico, nivel, nivel_sugerido
 order by almacen_code, rack;
+
+
+-- =============================================================================
+-- =============================================================================
+--  MIGRACIÓN 18 — REUBICAR REPARTIENDO, Y SIN PELEARSE CON EL ÍNDICE ÚNICO
+--
+--  Un casillero admite UNA sola asignación viva (ux_position_assignment_activa),
+--  y en el nivel de adulto cabe menos que abajo porque la caja es mayor.
+--  Reubicar reparte entre casilleros libres en vez de exigir uno solo.
+-- =============================================================================
+-- =============================================================================
+
+-- =============================================================================
+--  BLOQUE A — REUBICAR PUDIENDO REPARTIR EN VARIOS CASILLEROS
+-- =============================================================================
+create or replace function public.reubicar_asignacion(
+  p_assignment_id uuid,
+  p_position_id   uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_asg      public.position_assignments;
+  v_origen   public.positions;
+  v_rack     text;
+  v_destino  record;
+  v_tope     integer := public.fn_niveles_infantiles();
+  v_publico  text;
+  v_restante integer;
+  v_cuanto   integer;
+  v_usadas   integer := 0;
+  v_sitio    integer;
+  v_huecos   integer;
+  v_donde    text := '';
+begin
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+
+  select * into v_asg from public.position_assignments where id = p_assignment_id;
+  if v_asg.id is null then
+    raise exception 'Esa ubicación ya no existe.';
+  end if;
+  if v_asg.status = 'LIBERADA' then
+    raise exception 'Esa ubicación ya fue liberada: no hay nada que mover.';
+  end if;
+
+  select * into v_origen from public.positions where id = v_asg.position_id;
+  -- Con el almacén delante: los códigos de rack se repiten entre almacenes
+  -- (hay un RACK-01 en cada uno), así que "no cabe en RACK-07" a secas no dice
+  -- a cuál de los tres ir.
+  select w.code || ' · ' || r.code into v_rack
+    from public.racks r
+    join public.warehouses w on w.id = r.warehouse_id
+   where r.id = v_origen.rack_id;
+
+  select pr.audience into v_publico
+    from public.inventory_items it
+    join public.products pr on pr.id = it.product_id
+   where it.id = v_asg.item_id;
+
+  -- Se libera primero: la posición de origen sale del índice único y, si algo
+  -- falla más abajo, la excepción revierte también esto. La función es una
+  -- sola transacción, así que la caja nunca queda en el limbo.
+  update public.position_assignments
+     set status = 'LIBERADA', released_at = now(), updated_at = now()
+   where id = p_assignment_id;
+
+  v_restante := v_asg.quantity;
+
+  -- Destino explícito: va todo ahí y que el trigger de capacidad opine.
+  if p_position_id is not null then
+    select * into v_destino from public.positions where id = p_position_id;
+    if v_destino.id is null then
+      raise exception 'La posición de destino no existe.';
+    end if;
+    insert into public.position_assignments (position_id, item_id, quantity, status, notes)
+    values (v_destino.id, v_asg.item_id, v_restante, v_asg.status,
+            'Reubicada desde ' || v_origen.code || ' (nivel ' || v_origen.level || ')');
+
+    return jsonb_build_object(
+      'estado', 'REUBICADA', 'casilleros', 1,
+      'mensaje', 'Movida de ' || v_origen.code || ' a ' || v_destino.code || '.'
+    );
+  end if;
+
+  -- Sin destino: se reparte entre los casilleros LIBRES del mismo rack cuyo
+  -- nivel admita este público. Libres de verdad — sin ninguna asignación viva —
+  -- porque el índice ux_position_assignment_activa no permite dos.
+  for v_destino in
+    select p.*
+      from public.positions p
+     where p.rack_id = v_origen.rack_id
+       and p.id <> v_origen.id
+       and p.is_active
+       and p.capacity_units > 0
+       and case when v_publico = 'NINO'   then p.level <= v_tope
+                when v_publico = 'ADULTO' then p.level >  v_tope
+                else true end
+       and not exists (
+         select 1 from public.position_assignments a
+          where a.position_id = p.id
+            and a.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+       )
+     order by p.capacity_units desc, p.level, p.slot
+  loop
+    exit when v_restante <= 0;
+
+    v_cuanto := least(v_restante, v_destino.capacity_units);
+    insert into public.position_assignments (position_id, item_id, quantity, status, notes)
+    values (v_destino.id, v_asg.item_id, v_cuanto, v_asg.status,
+            'Reubicada desde ' || v_origen.code || ' (nivel ' || v_origen.level || ')');
+
+    v_restante := v_restante - v_cuanto;
+    v_usadas   := v_usadas + 1;
+    v_donde    := v_donde || case when v_donde = '' then '' else ', ' end
+                          || v_destino.code || ' (' || v_cuanto || ')';
+  end loop;
+
+  if v_restante > 0 then
+    -- Cuánto habría hecho falta, para que el mensaje diga qué resolver y no
+    -- solo que no se pudo.
+    select coalesce(sum(p.capacity_units), 0), count(*)
+      into v_sitio, v_huecos
+      from public.positions p
+     where p.rack_id = v_origen.rack_id
+       and p.id <> v_origen.id
+       and p.is_active
+       and p.capacity_units > 0
+       and case when v_publico = 'NINO'   then p.level <= v_tope
+                when v_publico = 'ADULTO' then p.level >  v_tope
+                else true end
+       and not exists (
+         select 1 from public.position_assignments a
+          where a.position_id = p.id
+            and a.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+       );
+
+    if v_huecos = 0 then
+      raise exception 'En % no queda ningún casillero libre donde pueda ir calzado de %. O están todos ocupados, o sus casilleros son más angostos que la caja (revisa cuántas posiciones por nivel tiene el rack: a más casilleros, más chico cada uno).',
+        v_rack, lower(coalesce(v_publico, 'ese público'));
+    end if;
+
+    raise exception 'En % caben % cajas en los % casilleros libres, y hay que mover %. Faltan % — reparte el resto en otro rack o quítale casilleros a este para que cada uno sea más ancho.',
+      v_rack, v_sitio, v_huecos, v_asg.quantity, v_asg.quantity - v_sitio;
+  end if;
+
+  return jsonb_build_object(
+    'estado',     'REUBICADA',
+    'casilleros', v_usadas,
+    'desde',      v_origen.code,
+    'mensaje',    case when v_usadas = 1
+                    then 'Movida de ' || v_origen.code || ' a ' || v_donde || '.'
+                    else v_asg.quantity || ' unidades de ' || v_origen.code ||
+                         ' repartidas en ' || v_usadas || ' casilleros: ' || v_donde || '.'
+                  end
+  );
+end;
+$fn$;
+
+grant execute on function public.reubicar_asignacion(uuid, uuid) to authenticated;
+
+comment on function public.reubicar_asignacion is
+  'Mueve una asignación al nivel que le corresponde, repartiéndola en varios casilleros si no cabe en uno. Un casillero admite una sola asignación viva (ux_position_assignment_activa), así que reparte entre los que estén libres. Se llama DESPUÉS de mover la caja de verdad.';
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+-- Qué hay pendiente y si el rack tiene sitio para ello. Una fila con
+-- faltan > 0 es un rack que no puede absorber lo suyo: hay que quitarle
+-- casilleros (para que cada uno sea más ancho) o llevar el resto a otro.
+with pend as (
+  select rp.rack_id, rp.rack, rp.almacen_code, rp.publico,
+         sum(rp.unidades) as hay_que_mover
+    from public.v_reubicaciones_pendientes rp
+   group by rp.rack_id, rp.rack, rp.almacen_code, rp.publico
+),
+sitio as (
+  select p.rack_id,
+         sum(p.capacity_units) filter (where p.level > public.fn_niveles_infantiles()) as cabe_arriba,
+         sum(p.capacity_units) filter (where p.level <= public.fn_niveles_infantiles()) as cabe_abajo
+    from public.positions p
+   where p.is_active
+     and not exists (
+       select 1 from public.position_assignments a
+        where a.position_id = p.id
+          and a.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING'))
+   group by p.rack_id
+)
+select
+  pend.almacen_code,
+  pend.rack,
+  pend.publico,
+  pend.hay_que_mover,
+  case when pend.publico = 'NINO' then coalesce(sitio.cabe_abajo, 0)
+       else coalesce(sitio.cabe_arriba, 0) end                        as cabe_en_los_libres,
+  greatest(0, pend.hay_que_mover
+             - case when pend.publico = 'NINO' then coalesce(sitio.cabe_abajo, 0)
+                    else coalesce(sitio.cabe_arriba, 0) end)          as faltan
+from pend
+left join sitio on sitio.rack_id = pend.rack_id
+order by faltan desc, pend.almacen_code, pend.rack;
+
+
+-- =============================================================================
+-- =============================================================================
+--  MIGRACIÓN 19 — LA CAJA SE PUEDE GIRAR
+--
+--  El cálculo probaba la caja en una sola orientación, con el lado largo
+--  siempre contra el frente. En un casillero de 29 cm daba 0 cajas de adulto;
+--  girada 90 grados entran 12. Se prueban las dos y gana la mejor.
+-- =============================================================================
+-- =============================================================================
+
+-- =============================================================================
+--  BLOQUE A — PROBAR LAS DOS ORIENTACIONES Y QUEDARSE CON LA MEJOR
+-- =============================================================================
+-- La caja siempre apoya sobre su base (el alto es siempre el alto); lo que rota
+-- es el rectángulo de abajo. Son dos formas de poner la misma caja en el mismo
+-- estante, así que se calcula cuántas entran de cada una y gana la mayor.
+create or replace function public.fn_cajas_en_slot(
+  p_frente_m numeric,
+  p_fondo_m  numeric,
+  p_nivel    integer
+)
+returns integer
+language sql
+immutable
+set search_path = public
+as $fn$
+  with caja as (
+    select
+      case when p_nivel <= public.fn_niveles_infantiles() then 0.22 else 0.35 end as largo,
+      case when p_nivel <= public.fn_niveles_infantiles() then 0.15 else 0.25 end as ancho,
+      case when p_nivel <= public.fn_niveles_infantiles() then 0.09 else 0.13 end as alto
+  ),
+  -- Las dos formas de apoyarla: a lo largo del frente, o girada 90 grados.
+  orientaciones as (
+    select largo as x, ancho as y, alto from caja
+    union all
+    select ancho as x, largo as y, alto from caja
+  ),
+  cuentan as (
+    select floor(p_frente_m / x) * floor(p_fondo_m / y) * floor(0.45 / alto) as cajas
+      from orientaciones
+  )
+  select greatest(0, floor(max(cajas) * 0.85)::integer) from cuentan;
+$fn$;
+
+comment on function public.fn_cajas_en_slot is
+  'Cajas que entran en un casillero de p_frente_m x p_fondo_m según su nivel, probando la caja en sus dos orientaciones horizontales. Infantil 22x15x9 cm en los niveles bajos; adulto 35x25x13 (caja de hombre, la mayor) del resto. 45 cm de luz entre estantes y 15% de holgura de maniobra.';
+
+
+-- =============================================================================
+--  BLOQUE B — VOLVER A MEDIR TODO LO YA DECLARADO
+-- =============================================================================
+-- Las capacidades vigentes se calcularon sin girar la caja: las de casillero
+-- angosto están subestimadas, y una de ellas en 0. fn_recalcular_capacidades
+-- nunca declara menos de lo que la posición ya tiene adentro.
+do $bloque$
+declare
+  r record;
+begin
+  for r in select id from public.racks loop
+    perform public.fn_recalcular_capacidades(r.id);
+  end loop;
+end;
+$bloque$;
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+-- 1. Un casillero angosto ya no da 0. Con 29 cm de frente y 2 m de fondo, una
+--    caja de adulto solo entra girada.
+select
+  '29 cm de frente (ALM-04/RACK-01)' as caso,
+  public.fn_cajas_en_slot(0.29, 2, 3)  as adulto,
+  public.fn_cajas_en_slot(0.29, 2, 1)  as infantil
+union all
+select
+  '56 cm de frente (RACK-07)',
+  public.fn_cajas_en_slot(0.56, 2, 3),
+  public.fn_cajas_en_slot(0.56, 2, 1);
+-- Esperado: adulto 12 y 25 (antes 0 y 20).
+
+-- 2. Ningún nivel debería quedar en capacidad 0. Si sale alguno, su casillero
+--    es más angosto que la caja incluso girada: hay que darle menos posiciones
+--    por nivel a ese rack para que cada una sea más ancha.
+select
+  w.code           as almacen,
+  r.code           as rack,
+  p.level          as nivel,
+  count(*)         as casilleros,
+  max(p.capacity_units) as capacidad
+from public.positions p
+join public.racks      r on r.id = p.rack_id
+join public.warehouses w on w.id = r.warehouse_id
+where p.capacity_units = 0
+group by w.code, r.code, p.level
+order by w.code, r.code, p.level;

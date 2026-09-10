@@ -321,7 +321,7 @@ function renderReubicaciones() {
     boton.type = 'button';
     boton.className = 'btn-secundario btn-chico';
     boton.textContent = 'Ya la moví';
-    boton.title = `Mueve ${p.sku} al primer hueco libre del nivel ${p.nivel_sugerido} de ${p.rack}`;
+    boton.title = `Mueve ${p.sku} a los huecos libres del nivel ${p.nivel_sugerido} de ${p.almacen_code} · ${p.rack}`;
     boton.addEventListener('click', () => confirmarReubicacion(p, boton));
 
     fila.append(texto, boton);
