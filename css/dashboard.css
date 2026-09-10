@@ -474,7 +474,14 @@ section { margin-bottom: 28px; }
 
 table {
   width: 100%;
-  table-layout: fixed;
+  /* auto, no fixed. Con fixed los <col> reparten porcentajes rígidos: Precio
+     recibía su 8% aunque "S/ 1,299.00" no entrara, y se cortaba con elipsis
+     con espacio de sobra en la columna de al lado. En auto los porcentajes
+     pasan a ser una sugerencia y ninguna columna baja del ancho de su
+     contenido. El min-width evita que en pantallas angostas se apriete todo
+     hasta no leerse: .tabla-wrap ya scrollea en horizontal. */
+  min-width: 900px;
+  table-layout: auto;
   border-collapse: collapse;
   font-size: 13.5px;
 }
@@ -512,6 +519,14 @@ tbody tr[data-estado="SIN_STOCK"]    { border-left-color: var(--bad); }
 tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 
 .celda-num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+/* El motivo es lo único de la tabla que puede ser una frase entera: se
+   envuelve en varias líneas en vez de recortarse. Nada más acá se parte,
+   porque un SKU o una fecha cortados a la mitad se leen peor que anchos. */
+.celda-texto {
+  white-space: normal;
+  min-width: 180px;
+}
 
 .pill {
   display: inline-flex;

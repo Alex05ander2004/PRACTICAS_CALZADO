@@ -153,7 +153,7 @@ function filaArticulo(art) {
   tr.dataset.estado = estado;
   tr.innerHTML = `
     <td class="mono">${art.sku}</td>
-    <td>${nombre}${talla} ${insigniaPublico}</td>
+    <td class="celda-texto">${nombre}${talla} ${insigniaPublico}</td>
     <td>${categoria}</td>
     <td class="celda-num">${cantidad}</td>
     <td class="celda-num">${costo}</td>
@@ -227,10 +227,10 @@ function filaMovimiento(mov) {
   tr.innerHTML = `
     <td class="mono">${fecha}</td>
     <td class="mono">${mov.sku}</td>
-    <td>${mov.producto}${mov.talla ? ' · Talla ' + mov.talla : ''}</td>
+    <td class="celda-texto">${mov.producto}${mov.talla ? ' · Talla ' + mov.talla : ''}</td>
     <td>${tipoTexto}</td>
     <td class="celda-num">${mov.quantity}</td>
-    <td>${mov.reason ?? '—'}</td>
+    <td class="celda-texto">${mov.reason ?? '—'}</td>
     <td><span class="pill ${clase}">${texto}</span></td>
     <td class="acciones"></td>
   `;
