@@ -60,6 +60,74 @@ $fn$;
 comment on function public.fn_pegar_a_pared is
   'Lleva un punto a la pared más cercana del plano. La entrada del almacén siempre pasa por acá: una puerta en medio del piso no existe.';
 
+create or replace function public.fn_celda_tapada(
+  p_warehouse_id uuid,
+  p_x            integer,
+  p_y            integer
+)
+returns boolean
+language sql
+stable
+set search_path = public
+as $fn$
+  select exists (
+    select 1 from public.racks
+     where warehouse_id = p_warehouse_id
+       and p_x >= grid_x and p_x < grid_x + grid_ancho
+       and p_y >= grid_y and p_y < grid_y + grid_alto
+  );
+$fn$;
+
+-- Pegar a la pared no alcanza: esa pared puede tener un rack apoyado encima.
+-- Cuando la puerta se reacomoda sola (al redimensionar el almacén, o en el
+-- backfill de acá abajo) no hay ningún gesto del usuario que rechazar, así que
+-- se busca la celda libre más cercana del perímetro en vez de fallar.
+create or replace function public.fn_puerta_libre(
+  p_warehouse_id uuid,
+  p_x            integer,
+  p_y            integer,
+  p_ancho        integer,
+  p_alto         integer
+)
+returns integer[]
+language plpgsql
+stable
+set search_path = public
+as $fn$
+declare
+  v_punto integer[];
+  v_libre record;
+begin
+  v_punto := public.fn_pegar_a_pared(p_x, p_y, p_ancho, p_alto);
+
+  if not public.fn_celda_tapada(p_warehouse_id, v_punto[1], v_punto[2]) then
+    return v_punto;
+  end if;
+
+  select c.x, c.y into v_libre
+    from (
+      select g.n as x, 0 as y            from generate_series(0, p_ancho - 1) g(n)
+      union all
+      select g.n,      p_alto - 1        from generate_series(0, p_ancho - 1) g(n)
+      union all
+      select 0,        g.n               from generate_series(1, p_alto - 2)  g(n)
+      union all
+      select p_ancho - 1, g.n            from generate_series(1, p_alto - 2)  g(n)
+    ) c
+   where not public.fn_celda_tapada(p_warehouse_id, c.x, c.y)
+   order by (c.x - p_x) * (c.x - p_x) + (c.y - p_y) * (c.y - p_y)
+   limit 1;
+
+  -- Perímetro entero tapado (un almacén así no se puede operar de todos modos):
+  -- se devuelve el borde natural y que lo resuelva quien mueva los racks.
+  if v_libre.x is null then
+    return v_punto;
+  end if;
+
+  return array[v_libre.x, v_libre.y];
+end;
+$fn$;
+
 
 -- =============================================================================
 --  BLOQUE B — LAS ENTRADAS QUE YA ESTABAN, A LA PARED
@@ -68,9 +136,12 @@ comment on function public.fn_pegar_a_pared is
 -- que escribió la migración 09 lo violarían y la migración abortaría.
 alter table public.warehouses drop constraint if exists ck_warehouses_grilla;
 
-update public.warehouses
-   set entrada_x = (public.fn_pegar_a_pared(entrada_x, entrada_y, grid_ancho, grid_alto))[1],
-       entrada_y = (public.fn_pegar_a_pared(entrada_x, entrada_y, grid_ancho, grid_alto))[2];
+update public.warehouses w
+   set entrada_x = p.punto[1],
+       entrada_y = p.punto[2]
+  from (select id, public.fn_puerta_libre(id, entrada_x, entrada_y, grid_ancho, grid_alto) as punto
+          from public.warehouses) p
+ where p.id = w.id;
 
 alter table public.warehouses
   add constraint ck_warehouses_grilla check (
@@ -186,7 +257,7 @@ begin
 
   -- La entrada sí se reacomoda sola: es un punto de referencia del plano, no
   -- mercadería de nadie.
-  v_punto := public.fn_pegar_a_pared(v_wh.entrada_x, v_wh.entrada_y, p_grid_ancho, p_grid_alto);
+  v_punto := public.fn_puerta_libre(v_wh.id, v_wh.entrada_x, v_wh.entrada_y, p_grid_ancho, p_grid_alto);
 
   update public.warehouses
      set grid_ancho = p_grid_ancho,
@@ -198,6 +269,63 @@ begin
   returning * into v_wh;
 
   return v_wh;
+end;
+$fn$;
+
+
+-- =============================================================================
+--  BLOQUE E — UN RACK TAMPOCO PUEDE TAPAR LA PUERTA
+-- =============================================================================
+-- mover_entrada_almacen ya impide llevar la puerta encima de un rack. Pero la
+-- misma superposición se puede armar desde el otro lado: arrastrando el rack
+-- sobre la puerta. Es la misma regla dicha desde el otro extremo, y va donde
+-- ya viven las demás reglas de geometría — el trigger de la migración 09.
+--
+-- No es cosmético: A* arranca en la celda de la entrada, y si está bloqueada
+-- calcularRutaAEstrella devuelve null y la UI dice "el rack quedó encerrado",
+-- que es un diagnóstico falso. El problema no era el rack de destino.
+create or replace function public.fn_validar_geometria_rack()
+returns trigger
+language plpgsql
+as $fn$
+declare
+  v_alm       public.warehouses;
+  v_conflicto text;
+begin
+  select * into v_alm from public.warehouses where id = new.warehouse_id;
+
+  if new.grid_x + new.grid_ancho > v_alm.grid_ancho
+     or new.grid_y + new.grid_alto > v_alm.grid_alto then
+    raise exception 'El rack % no cabe: se sale del plano del almacén (% x % celdas).',
+      new.code, v_alm.grid_ancho, v_alm.grid_alto
+      using errcode = 'check_violation';
+  end if;
+
+  -- Dos rectángulos se pisan solo si se solapan en LOS DOS ejes a la vez.
+  select code into v_conflicto
+    from public.racks
+   where warehouse_id = new.warehouse_id
+     and id <> new.id
+     and new.grid_x < grid_x + grid_ancho
+     and grid_x     < new.grid_x + new.grid_ancho
+     and new.grid_y < grid_y + grid_alto
+     and grid_y     < new.grid_y + new.grid_alto
+   limit 1;
+
+  if v_conflicto is not null then
+    raise exception 'El rack % se superpone con el rack %. Muévelo a un espacio libre.',
+      new.code, v_conflicto
+      using errcode = 'check_violation';
+  end if;
+
+  if v_alm.entrada_x >= new.grid_x and v_alm.entrada_x < new.grid_x + new.grid_ancho
+     and v_alm.entrada_y >= new.grid_y and v_alm.entrada_y < new.grid_y + new.grid_alto then
+    raise exception 'El rack % taparía la entrada del almacén (celda %, %). Deja la puerta despejada.',
+      new.code, v_alm.entrada_x, v_alm.entrada_y
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
 end;
 $fn$;
 

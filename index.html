@@ -39,7 +39,7 @@
   <div id="pantallaDashboard" hidden>
     <header class="topbar">
       <div class="marca">WMS <span>Calzado</span></div>
-      <div class="contexto">Almacén A · Bodega B · Bodega C</div>
+      <div class="contexto" id="contextoAlmacenes"></div>
       <div class="usuario">
         <span id="usuarioNombre"></span>
         <span id="usuarioRol" class="rol-chip"></span>
@@ -139,14 +139,15 @@
         <div class="tabla-wrap">
           <table>
             <colgroup>
-              <col style="width: 11%" />
-              <col style="width: 11%" />
-              <col style="width: 20%" />
-              <col style="width: 9%" />
+              <col style="width: 10%" />
+              <col style="width: 10%" />
+              <col style="width: 17%" />
               <col style="width: 8%" />
-              <col style="width: 19%" />
-              <col style="width: 11%" />
-              <col style="width: 11%" />
+              <col style="width: 7%" />
+              <col style="width: 14%" />
+              <col style="width: 15%" />
+              <col style="width: 10%" />
+              <col style="width: 9%" />
             </colgroup>
             <thead>
               <tr>
@@ -156,12 +157,13 @@
                 <th>Tipo</th>
                 <th>Cantidad</th>
                 <th>Motivo</th>
+                <th>Ubicación</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody id="tablaMovimientosBody">
-              <tr><td colspan="8" class="skeleton">Cargando movimientos…</td></tr>
+              <tr><td colspan="9" class="skeleton">Cargando movimientos…</td></tr>
             </tbody>
           </table>
         </div>
@@ -173,11 +175,11 @@
         </div>
 
         <div class="filtros">
+          <!-- Las opciones las pone poblarSelectsDeAlmacen() con los almacenes
+               que existan de verdad; escritas a mano, un almacén nuevo no
+               aparecería en ninguna pantalla. -->
           <select id="filtroMapaAlmacen" class="filtro-select">
             <option value="">Almacén: todos</option>
-            <option value="ALM-A">Almacén A</option>
-            <option value="BOD-B">Bodega B</option>
-            <option value="BOD-C">Bodega C</option>
           </select>
           <label class="opcion-radio">
             <input type="checkbox" id="filtroMapaSoloLibres" />
@@ -186,29 +188,43 @@
         </div>
         <p id="contadorMapa" class="contador-resultados" role="status" aria-live="polite"></p>
 
+        <!-- Trabajo físico pendiente tras la migración 15: cajas que quedaron
+             en un nivel que su público ya no admite. Se oculta solo cuando no
+             queda ninguna. -->
+        <details id="panelReubicaciones" class="panel-reubicaciones" hidden>
+          <summary>
+            <span id="reubicacionesTitulo">Pendientes de reubicar</span>
+            <span class="panel-reubicaciones-ayuda">mueve la caja y luego confirma acá</span>
+          </summary>
+          <div id="listaReubicaciones" class="reubicaciones-lista"></div>
+        </details>
+
         <div class="mapa-leyenda">
           <span class="mapa-leyenda-item"><span class="mapa-swatch libre"></span>Libre</span>
           <span class="mapa-leyenda-item"><span class="mapa-swatch ocupada"></span>Ocupada</span>
           <span class="mapa-leyenda-item"><span class="mapa-swatch reservada"></span>Reservada</span>
           <span class="mapa-leyenda-item"><span class="mapa-swatch en_picking"></span>En picking</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Nivel 1 · infantil</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Niveles 1-2 · infantil</span>
         </div>
 
         <div class="plano-controles">
           <button type="button" id="btnModoEdicion" class="btn-secundario btn-chico" aria-pressed="false">Editar plano</button>
           <div class="ruta-calculadora">
-            <div class="campo">
-              <label for="campoRutaDestino">Ruta desde la entrada hasta</label>
-              <select id="campoRutaDestino"></select>
+            <fieldset class="ruta-paradas">
+              <legend>Recorrido desde la entrada — marca los racks que hay que visitar</legend>
+              <div id="listaParadasRuta" class="ruta-paradas-lista"></div>
+            </fieldset>
+            <div class="ruta-acciones">
+              <button type="button" id="btnCalcularRuta" class="btn-primario btn-chico">Calcular recorrido más corto</button>
+              <button type="button" id="btnLimpiarRuta" class="btn-secundario btn-chico" hidden>Limpiar recorrido</button>
             </div>
-            <button type="button" id="btnCalcularRuta" class="btn-primario btn-chico">Calcular ruta más corta</button>
-            <button type="button" id="btnLimpiarRuta" class="btn-secundario btn-chico" hidden>Limpiar ruta</button>
           </div>
         </div>
 
         <div id="barraEdicion" class="barra-edicion" hidden>
           <span id="estadoEdicion"></span>
           <span class="barra-edicion-acciones">
+            <button type="button" id="btnNuevoAlmacen" class="btn-secundario btn-chico">+ Nuevo almacén</button>
             <button type="button" id="btnNuevoRack" class="btn-secundario btn-chico">+ Nuevo rack</button>
             <button type="button" id="btnDescartarLayout" class="btn-secundario btn-chico" hidden>Descartar cambios</button>
             <button type="button" id="btnGuardarLayout" class="btn-primario btn-chico" hidden>Guardar layout</button>
@@ -226,6 +242,7 @@
             <input id="campoAlmacenAlto" type="number" min="10" max="80" step="1" />
           </div>
           <button type="button" id="btnAplicarTamanoAlmacen" class="btn-secundario btn-chico">Aplicar tamaño</button>
+          <button type="button" id="btnEliminarAlmacen" class="btn-peligro btn-chico">Eliminar almacén</button>
           <span id="panelAlmacenNota" class="panel-rack-nota"></span>
         </div>
 
@@ -241,7 +258,7 @@
           </div>
           <div class="campo campo-chico">
             <label for="campoRackNiveles">Niveles</label>
-            <input id="campoRackNiveles" type="number" min="1" max="8" step="1" />
+            <input id="campoRackNiveles" type="number" min="3" max="8" step="1" title="Entre 3 y 8: los dos niveles de abajo son para calzado infantil y hace falta al menos uno encima para el de adulto" />
           </div>
           <div class="campo campo-chico">
             <label for="campoRackSlots">Posiciones/nivel</label>
@@ -301,7 +318,7 @@
       <div class="fila-2" id="bloqueModeloMarca">
         <div class="campo">
           <label for="campoModelCode">Código de modelo</label>
-          <input id="campoModelCode" type="text" placeholder="ZAP-066" />
+          <input id="campoModelCode" type="text" placeholder="ZAP-066" maxlength="11" pattern="[A-Za-z]{2,5}-[0-9]{3,5}" title="Formato ZAP-001" />
         </div>
         <div class="campo">
           <label for="campoMarca">Marca</label>
@@ -311,7 +328,7 @@
 
       <div class="campo" id="grupoNombre">
         <label for="campoNombre">Nombre</label>
-        <input id="campoNombre" type="text" required />
+        <input id="campoNombre" type="text" required maxlength="80" />
       </div>
 
       <div class="fila-2" id="bloqueCategoriaProveedor">
@@ -327,7 +344,7 @@
 
       <div class="campo" id="grupoDescripcion">
         <label for="campoDescripcion">Descripción</label>
-        <textarea id="campoDescripcion" rows="2"></textarea>
+        <textarea id="campoDescripcion" rows="2" maxlength="300"></textarea>
       </div>
 
       <hr class="modal-divisor" />
@@ -335,19 +352,15 @@
       <div class="fila-3">
         <div class="campo">
           <label for="campoSku">SKU</label>
-          <input id="campoSku" type="text" required />
+          <input id="campoSku" type="text" required maxlength="24" pattern="[A-Za-z0-9]+(-[A-Za-z0-9]+)+" title="Letras, números y guiones: ZAP-001-40" />
         </div>
         <div class="campo">
           <label for="campoTalla">Talla (EU)</label>
-          <input id="campoTalla" type="text" required />
+          <input id="campoTalla" type="text" required maxlength="6" />
         </div>
         <div class="campo" id="campoAlmacenGrupo">
           <label for="campoAlmacen">Almacén</label>
-          <select id="campoAlmacen">
-            <option value="ALM-A">Almacén A</option>
-            <option value="BOD-B">Bodega B</option>
-            <option value="BOD-C">Bodega C</option>
-          </select>
+          <select id="campoAlmacen"></select>
         </div>
       </div>
 
@@ -461,12 +474,12 @@
 
       <div class="campo">
         <label for="campoMovMotivo">Motivo</label>
-        <input id="campoMovMotivo" type="text" placeholder="Compra de mercadería, pedido de tienda…" />
+        <input id="campoMovMotivo" type="text" placeholder="Compra de mercadería, pedido de tienda…" maxlength="120" />
       </div>
 
       <div class="campo">
         <label for="campoMovNotas">Notas</label>
-        <textarea id="campoMovNotas" rows="2"></textarea>
+        <textarea id="campoMovNotas" rows="2" maxlength="300"></textarea>
       </div>
 
       <div class="modal-acciones">
@@ -488,7 +501,7 @@
       <div id="modalMotivoError" class="login-error" role="alert" tabindex="-1" hidden></div>
       <div class="campo">
         <label for="campoMotivoTexto" id="campoMotivoLabel">Motivo</label>
-        <textarea id="campoMotivoTexto" rows="2"></textarea>
+        <textarea id="campoMotivoTexto" rows="2" maxlength="300"></textarea>
       </div>
       <div class="modal-acciones">
         <button type="button" id="btnCancelarMotivo" class="btn-secundario">Cancelar</button>
@@ -519,11 +532,7 @@
 
       <div class="campo">
         <label for="campoUbicAlmacen">Almacén</label>
-        <select id="campoUbicAlmacen">
-          <option value="ALM-A">Almacén A</option>
-          <option value="BOD-B">Bodega B</option>
-          <option value="BOD-C">Bodega C</option>
-        </select>
+        <select id="campoUbicAlmacen"></select>
       </div>
 
       <div class="campo">
@@ -548,7 +557,7 @@
 
       <div class="campo">
         <label for="campoUbicNotas">Notas</label>
-        <input id="campoUbicNotas" type="text" />
+        <input id="campoUbicNotas" type="text" maxlength="200" />
       </div>
 
       <div class="modal-acciones">
@@ -561,6 +570,53 @@
   <!-- ============================================================ -->
   <!-- MODAL: NUEVO RACK                                             -->
   <!-- ============================================================ -->
+  <div id="modalNuevoAlmacen" class="modal-backdrop" hidden>
+    <form id="formNuevoAlmacen" class="modal-tarjeta modal-tarjeta--chica" novalidate>
+      <div class="modal-header">
+        <h3>Nuevo almacén</h3>
+        <button type="button" id="btnCerrarModalAlmacen" class="btn-cerrar" aria-label="Cerrar">&times;</button>
+      </div>
+
+      <div id="modalAlmacenError" class="login-error" role="alert" tabindex="-1" hidden></div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoNuevoAlmacenCodigo">Código</label>
+          <input id="campoNuevoAlmacenCodigo" type="text" placeholder="ALM-D" required maxlength="12" pattern="[A-Za-z0-9]{2,10}(-[A-Za-z0-9]{1,10})*" title="Letras y números, separados por guiones: ALM-D, BOD-02" />
+        </div>
+        <div class="campo">
+          <label for="campoNuevoAlmacenNombre">Nombre</label>
+          <input id="campoNuevoAlmacenNombre" type="text" placeholder="Almacén D" required maxlength="40" />
+        </div>
+      </div>
+
+      <div class="campo">
+        <label for="campoNuevoAlmacenDireccion">Dirección (opcional)</label>
+        <input id="campoNuevoAlmacenDireccion" type="text" placeholder="Av. Industrial 450" maxlength="120" />
+      </div>
+
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoNuevoAlmacenAncho">Ancho (m)</label>
+          <input id="campoNuevoAlmacenAncho" type="number" min="10" max="80" step="1" value="40" />
+        </div>
+        <div class="campo">
+          <label for="campoNuevoAlmacenAlto">Largo (m)</label>
+          <input id="campoNuevoAlmacenAlto" type="number" min="10" max="80" step="1" value="30" />
+        </div>
+      </div>
+
+      <p id="estimacionNuevoAlmacen" class="modal-mensaje modal-mensaje--dato" role="status" aria-live="polite"></p>
+
+      <p class="modal-mensaje">La última letra del código encabeza los códigos de posición de sus racks (ALM-D &rarr; D-07-01), así que tiene que ser distinta a la de los demás almacenes. Nace vacío y con la puerta al centro de la pared de abajo; los racks se agregan después.</p>
+
+      <div class="modal-acciones">
+        <button type="button" id="btnCancelarNuevoAlmacen" class="btn-secundario">Cancelar</button>
+        <button type="submit" id="btnGuardarNuevoAlmacen" class="btn-primario">Crear almacén</button>
+      </div>
+    </form>
+  </div>
+
   <div id="modalNuevoRack" class="modal-backdrop" hidden>
     <form id="formNuevoRack" class="modal-tarjeta modal-tarjeta--chica" novalidate>
       <div class="modal-header">
@@ -572,7 +628,7 @@
 
       <div class="campo">
         <label for="campoNuevoRackCodigo">Código</label>
-        <input id="campoNuevoRackCodigo" type="text" placeholder="RACK-09" required />
+        <input id="campoNuevoRackCodigo" type="text" placeholder="RACK-09" required maxlength="7" pattern="RACK-[0-9]{2}" title="Formato RACK-NN, por ejemplo RACK-09" />
       </div>
 
       <div class="fila-2">
@@ -589,7 +645,7 @@
       <div class="fila-2">
         <div class="campo">
           <label for="campoNuevoRackNiveles">Niveles (pisos)</label>
-          <input id="campoNuevoRackNiveles" type="number" min="1" max="8" step="1" value="3" />
+          <input id="campoNuevoRackNiveles" type="number" min="3" max="8" step="1" value="3" title="Entre 3 y 8: los dos niveles de abajo son para calzado infantil y hace falta al menos uno encima para el de adulto" />
         </div>
         <div class="campo">
           <label for="campoNuevoRackPosiciones">Posiciones por nivel</label>
@@ -599,7 +655,7 @@
 
       <p id="estimacionNuevoRack" class="modal-mensaje modal-mensaje--dato" role="status" aria-live="polite"></p>
 
-      <p class="modal-mensaje">El nivel 1 es el del piso: ahí solo entra calzado infantil, y como la caja de niño es más chica, rinde más cajas que los de arriba. Se coloca en el primer hueco libre del plano; después lo arrastras a su sitio.</p>
+      <p class="modal-mensaje">Los niveles 1 y 2 son los de abajo: ahí solo entra calzado infantil, y como la caja de niño (22&times;15&times;9 cm) es bastante más chica que la de adulto (35&times;25&times;13), rinden casi cinco veces más cajas. Del nivel 3 en adelante va el calzado de adulto. Se coloca en el primer hueco libre del plano; después lo arrastras a su sitio.</p>
 
       <div class="modal-acciones">
         <button type="button" id="btnCancelarNuevoRack" class="btn-secundario">Cancelar</button>

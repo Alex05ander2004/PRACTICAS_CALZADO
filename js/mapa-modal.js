@@ -1,3 +1,9 @@
+// Espejo de fn_niveles_infantiles() (migración 15). El corte real lo aplica la
+// base con su trigger; esto solo decide cómo se rotula el mapa, así que si
+// algún día cambia allá, este número tiene que seguirla.
+const NIVELES_INFANTILES = 2;
+const esNivelInfantil = (nivel) => nivel <= NIVELES_INFANTILES;
+
 // Mapa del almacén (lectura + filtro) y el modal "Ubicar artículo" que asigna
 // o libera una posición. Fase 9: cierra el hueco de "necesidades adicionales"
 // del CASO.txt que quedó solo en el esquema — mapa de racks/posiciones,
@@ -28,13 +34,13 @@ function tilePosicion(fila) {
   btn.type = 'button';
   btn.className = 'mapa-tile';
   if (!libre) btn.classList.add(fila.estado_ocupacion.toLowerCase());
-  if (fila.level === 1) btn.classList.add('infantil');
+  if (esNivelInfantil(fila.level)) btn.classList.add('infantil');
 
   const estadoTexto = libre
     ? 'Libre'
     : (ETIQUETA_OCUPACION[fila.estado_ocupacion]?.texto ?? fila.estado_ocupacion);
   const detalle = libre ? '' : ` — ${fila.sku} · ${fila.producto}${fila.talla ? ' talla ' + fila.talla : ''} (${fila.unidades} uds)`;
-  btn.title = `${fila.rack} · ${fila.posicion} — nivel ${fila.level}${fila.level === 1 ? ' (infantil)' : ''} — ${estadoTexto}${detalle}`;
+  btn.title = `${fila.rack} · ${fila.posicion} — nivel ${fila.level}${esNivelInfantil(fila.level) ? ' (infantil)' : ''} — ${estadoTexto}${detalle}`;
   btn.setAttribute('aria-label', btn.title + (libre ? '' : ' — clic para liberar'));
 
   if (libre) {
@@ -119,6 +125,9 @@ function aplicarFiltroMapa() {
 function inicializarMapa(mapa) {
   todoElMapa = mapa;
   aplicarFiltroMapa();
+  // No se espera: el panel de pendientes es informativo y el mapa no debe
+  // quedarse en blanco mientras llega.
+  refrescarReubicaciones();
 }
 
 document.getElementById('filtroMapaAlmacen').addEventListener('change', aplicarFiltroMapa);
@@ -158,7 +167,7 @@ function poblarSelectPosiciones(almacenCode) {
   for (const pos of libres) {
     const opt = document.createElement('option');
     opt.value = pos.position_id;
-    opt.textContent = `${pos.rack} · ${pos.posicion} (nivel ${pos.level}${pos.level === 1 ? ' · infantil' : ''})`;
+    opt.textContent = `${pos.rack} · ${pos.posicion} (nivel ${pos.level}${esNivelInfantil(pos.level) ? ' · infantil' : ''})`;
     select.appendChild(opt);
   }
 }
@@ -180,8 +189,10 @@ function abrirModalUbicar(articulo) {
     cajaActual.hidden = true;
   }
 
+  // El select ya viene con los almacenes reales y el primero elegido; solo se
+  // pisa esa elección si el artículo ya está ubicado en alguno.
   const selectAlmacen = document.getElementById('campoUbicAlmacen');
-  selectAlmacen.value = asignacionActual?.almacen_code ?? 'ALM-A';
+  if (asignacionActual?.almacen_code) selectAlmacen.value = asignacionActual.almacen_code;
   poblarSelectPosiciones(selectAlmacen.value);
 
   mostrarModal('modalUbicacion');
@@ -260,3 +271,79 @@ document.getElementById('formUbicacion').addEventListener('submit', async (event
     boton.textContent = textoOriginal;
   }
 });
+
+// =============================================================================
+//  PENDIENTES DE REUBICAR
+// =============================================================================
+// La migración 15 amplió el calzado infantil a dos niveles y dejó donde estaba
+// lo de adulto que ya ocupaba el nivel 2. No se movió solo a propósito: cambiar
+// la fila no baja la caja del estante. Esto es la lista de ese trabajo físico,
+// y cada botón se aprieta DESPUÉS de haberlo hecho.
+let reubicacionesPendientes = [];
+
+async function refrescarReubicaciones() {
+  const panel = document.getElementById('panelReubicaciones');
+  try {
+    reubicacionesPendientes = await InventarioAPI.listarReubicacionesPendientes();
+  } catch (err) {
+    // La vista llega con la migración 17: sin ella el panel simplemente no
+    // aparece, en vez de romper el mapa entero.
+    panel.hidden = true;
+    return;
+  }
+  renderReubicaciones();
+}
+
+function renderReubicaciones() {
+  const panel = document.getElementById('panelReubicaciones');
+  const lista = document.getElementById('listaReubicaciones');
+  const n = reubicacionesPendientes.length;
+
+  panel.hidden = n === 0;
+  if (n === 0) return;
+
+  document.getElementById('reubicacionesTitulo').textContent =
+    `Pendientes de reubicar (${n})`;
+
+  lista.innerHTML = '';
+  for (const p of reubicacionesPendientes) {
+    const fila = document.createElement('div');
+    fila.className = 'reubicacion-fila';
+
+    const texto = document.createElement('span');
+    texto.className = 'reubicacion-detalle';
+    texto.textContent =
+      `${p.almacen_code} · ${p.rack} · ${p.posicion} (nivel ${p.nivel}) — ` +
+      `${p.sku} ${p.producto}${p.talla ? ' talla ' + p.talla : ''}, ${p.unidades} uds · ` +
+      `${p.publico === 'NINO' ? 'infantil' : 'adulto'}, va al nivel ${p.nivel_sugerido}`;
+
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = 'btn-secundario btn-chico';
+    boton.textContent = 'Ya la moví';
+    boton.title = `Mueve ${p.sku} al primer hueco libre del nivel ${p.nivel_sugerido} de ${p.rack}`;
+    boton.addEventListener('click', () => confirmarReubicacion(p, boton));
+
+    fila.append(texto, boton);
+    lista.appendChild(fila);
+  }
+}
+
+async function confirmarReubicacion(pendiente, boton) {
+  boton.disabled = true;
+  boton.textContent = 'Moviendo…';
+  try {
+    const r = await InventarioAPI.reubicarAsignacion(pendiente.assignment_id);
+    mostrarToast(r.mensaje ?? 'Reubicada.', 'ok');
+    // El mapa cambió: la posición vieja quedó libre y la nueva ocupada.
+    const mapa = await InventarioAPI.obtenerMapaAlmacen();
+    inicializarMapa(mapa);
+    await refrescarReubicaciones();
+  } catch (err) {
+    // Si no hay hueco en el nivel de destino, la base lo dice con el rack y las
+    // unidades exactas.
+    mostrarToast(err.message ?? 'No se pudo reubicar.', 'bad');
+    boton.disabled = false;
+    boton.textContent = 'Ya la moví';
+  }
+}

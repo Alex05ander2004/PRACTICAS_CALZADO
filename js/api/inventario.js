@@ -66,6 +66,31 @@ const InventarioAPI = {
     return data;
   },
 
+  // Nace vacío y con la puerta al centro de la pared de abajo. El código se
+  // manda tal cual lo escribió el usuario: la base lo normaliza a mayúsculas y
+  // rechaza el que no tenga formato o repita la última letra de otro almacén.
+  async crearAlmacen({ code, name, gridAncho = 40, gridAlto = 30, address = null }) {
+    const { data, error } = await supabaseClient.rpc('crear_almacen', {
+      p_code: code,
+      p_name: name,
+      p_grid_ancho: gridAncho,
+      p_grid_alto: gridAlto,
+      p_address: address,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // Solo si está vacío de verdad: sin racks, sin inventario y sin historial.
+  // Cuando algo estorba, el mensaje de la base dice exactamente qué.
+  async eliminarAlmacen(warehouseCode) {
+    const { data, error } = await supabaseClient.rpc('eliminar_almacen', {
+      p_warehouse_code: warehouseCode,
+    });
+    if (error) throw error;
+    return data;
+  },
+
   // La puerta solo existe sobre una pared: la base lleva el punto al borde más
   // cercano y se niega si un rack está pegado ahí tapándola. La orientación no
   // se manda ni se guarda — se deduce de en qué pared quedó.
@@ -171,7 +196,8 @@ const InventarioAPI = {
   },
 
   // Único camino para que exista una fila de inventory (RLS no da INSERT
-  // directo — ver migración 06). warehouseCode: 'ALM-A' | 'BOD-B' | 'BOD-C'.
+  // directo — ver migración 06). warehouseCode es el código de un almacén
+  // existente; la lista sale de obtenerLayout(), no de una constante.
   async crearRegistroInventario({ itemId, warehouseCode, quantity = 0, minStock = 0, maxStock = null }) {
     const { data, error } = await supabaseClient.rpc('crear_registro_inventario', {
       p_item_id: itemId,
@@ -196,6 +222,33 @@ const InventarioAPI = {
       .select()
       .single();
 
+    if (error) throw error;
+    return data;
+  },
+
+  // Mercadería que quedó en un nivel que la regla de público ya no admite
+  // (migración 15). Es una lista de trabajo físico, no un error a corregir en
+  // la base: la caja está donde dice, solo que ahí ya no debería estar.
+  async listarReubicacionesPendientes() {
+    const { data, error } = await supabaseClient
+      .from('v_reubicaciones_pendientes')
+      .select('*')
+      .order('almacen_code')
+      .order('rack')
+      .order('posicion');
+    if (error) throw error;
+    return data;
+  },
+
+  // Se llama DESPUÉS de mover la caja de verdad. Liberar y volver a ubicar van
+  // en una sola RPC porque hacerlo en dos llamadas desde acá deja el stock en
+  // el aire si la segunda falla. Sin positionId, la base elige el primer hueco
+  // válido del mismo rack.
+  async reubicarAsignacion(assignmentId, positionId = null) {
+    const { data, error } = await supabaseClient.rpc('reubicar_asignacion', {
+      p_assignment_id: assignmentId,
+      p_position_id: positionId,
+    });
     if (error) throw error;
     return data;
   },

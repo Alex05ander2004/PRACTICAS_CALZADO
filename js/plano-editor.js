@@ -17,6 +17,7 @@ let rackSeleccionado = null;      // id del rack cuyo panel de propiedades está
 function inicializarLayout(layout) {
   layoutAlmacenes = layout.almacenes;
   layoutRacks = layout.racks;
+  poblarSelectsDeAlmacen();
 }
 
 function almacenPorCodigo(codigo) {
@@ -57,6 +58,23 @@ function pegarAPared(x, y, ancho, alto) {
   if (pared === 'derecha') return { x: ancho - 1, y: cy, pared };
   if (pared === 'arriba') return { x: cx, y: 0, pared };
   return { x: cx, y: alto - 1, pared };
+}
+
+function celdaTapadaPorRack(almacen, x, y) {
+  return racksDe(almacen.id).some((rack) => {
+    const g = geometriaDe(rack);
+    return x >= g.gridX && x < g.gridX + g.gridAncho &&
+           y >= g.gridY && y < g.gridY + g.gridAlto;
+  });
+}
+
+// Nada se pone encima de la entrada. Si la celda de la pared la ocupa un rack
+// el arrastre no avanza hasta ahí: la puerta se queda en el último lugar
+// válido. No se la reubica sola a otro punto — eso sería moverla a un sitio
+// que nadie eligió.
+function puertaValida(almacen, x, y) {
+  const punto = pegarAPared(x, y, almacen.grid_ancho, almacen.grid_alto);
+  return celdaTapadaPorRack(almacen, punto.x, punto.y) ? null : punto;
 }
 
 // La orientación de la entrada no se guarda en ninguna columna: sale de en qué
@@ -246,6 +264,10 @@ function renderUnPlano(almacen, mapaFilas) {
   const plano = document.createElement('div');
   plano.className = 'plano-piso' + (modoEdicion ? ' editando' : '');
   plano.style.aspectRatio = `${almacen.grid_ancho} / ${almacen.grid_alto}`;
+  // El CSS necesita la forma del local para decidir si lo que limita el tamaño
+  // es el ancho de la pantalla o su alto (ver .plano-piso).
+  plano.style.setProperty('--plano-ratio', almacen.grid_ancho / almacen.grid_alto);
+  plano.style.setProperty('--plano-cols', almacen.grid_ancho);
   plano.dataset.almacenId = almacen.id;
   // Las celdas de la grilla se dibujan con el fondo, no con 1200 divs.
   plano.style.backgroundSize = `${100 / almacen.grid_ancho}% ${100 / almacen.grid_alto}%`;
@@ -363,7 +385,8 @@ function habilitarArrastre(plano, almacen) {
       const { caja, el } = arrastrandoEntrada;
       const x = Math.round((e.clientX - caja.left) / (caja.width / almacen.grid_ancho) - 0.5);
       const y = Math.round((e.clientY - caja.top) / (caja.height / almacen.grid_alto) - 0.5);
-      const punto = pegarAPared(x, y, almacen.grid_ancho, almacen.grid_alto);
+      const punto = puertaValida(almacen, x, y);
+      if (!punto) return; // celda ocupada: la puerta no se mueve ahí
       arrastrandoEntrada.punto = punto;
       posicionarEntrada(el, almacen, punto.x, punto.y);
       return;
@@ -424,10 +447,14 @@ function habilitarArrastre(plano, almacen) {
   plano.addEventListener('pointercancel', soltar);
 }
 
+function hayCambiosPendientes() {
+  return racksModificados.size > 0 || entradaModificada.size > 0;
+}
+
 function actualizarBarraEdicion() {
   const n = racksModificados.size;
   const puertas = entradaModificada.size;
-  const hayCambios = n > 0 || puertas > 0;
+  const hayCambios = hayCambiosPendientes();
 
   document.getElementById('btnGuardarLayout').hidden = !hayCambios;
   document.getElementById('btnDescartarLayout').hidden = !hayCambios;
@@ -506,12 +533,25 @@ document.getElementById('btnGuardarLayout').addEventListener('click', async () =
 //  RUTA MÁS CORTA
 // =============================================================================
 
+// =============================================================================
+//  RECORRIDO POR VARIOS RACKS
+// =============================================================================
+// Un picking real casi nunca es "ir a un rack y volver": es una vuelta que pasa
+// por varios. El orden lo decide el sistema, porque es justo donde se gana o se
+// pierde distancia — visitar tres racks en el peor orden puede costar el doble
+// que en el mejor, y esa diferencia la camina una persona con un carrito.
+
+// Más de esto y las permutaciones dejan de ser instantáneas (8! = 40 320, que
+// todavía va sobrado; 10! ya son 3,6 millones). Con el tope puesto acá se puede
+// prometer el recorrido MÁS corto y no "uno bastante bueno".
+const MAX_PARADAS_RUTA = 8;
+
 function poblarSelectsRuta(almacenCode) {
-  const destinoSel = document.getElementById('campoRutaDestino');
+  const lista = document.getElementById('listaParadasRuta');
   const boton = document.getElementById('btnCalcularRuta');
 
   if (!almacenCode) {
-    destinoSel.innerHTML = '<option value="">Elige un almacén arriba ↑</option>';
+    lista.innerHTML = '<p class="ruta-paradas-vacio">Elige un almacén arriba ↑</p>';
     boton.disabled = true;
     return;
   }
@@ -519,42 +559,118 @@ function poblarSelectsRuta(almacenCode) {
   const almacen = almacenPorCodigo(almacenCode);
   if (!almacen) return;
 
-  boton.disabled = false;
-  const previo = destinoSel.value;
-  destinoSel.innerHTML = '';
-  for (const rack of racksDe(almacen.id)) {
-    const opt = document.createElement('option');
-    opt.value = rack.id;
-    opt.textContent = rack.code;
-    destinoSel.appendChild(opt);
+  // Se conserva lo que ya estaba marcado: cambiar de tamaño el plano o mover un
+  // rack repuebla esta lista, y perder la selección en cada repintado sería
+  // insufrible.
+  const marcados = new Set(paradasElegidas());
+  const racks = racksDe(almacen.id);
+
+  lista.innerHTML = '';
+  if (racks.length === 0) {
+    lista.innerHTML = '<p class="ruta-paradas-vacio">Este almacén todavía no tiene racks.</p>';
+    boton.disabled = true;
+    return;
   }
-  if ([...destinoSel.options].some((o) => o.value === previo)) destinoSel.value = previo;
+
+  for (const rack of racks) {
+    const id = `parada-${rack.id}`;
+    const label = document.createElement('label');
+    label.className = 'ruta-parada';
+    label.innerHTML = `<input type="checkbox" id="${id}" value="${rack.id}" /> <span></span>`;
+    label.querySelector('span').textContent = rack.code;
+    label.querySelector('input').checked = marcados.has(rack.id);
+    lista.appendChild(label);
+  }
+  boton.disabled = false;
+}
+
+function paradasElegidas() {
+  return [...document.querySelectorAll('#listaParadasRuta input:checked')].map((c) => c.value);
+}
+
+// Un tramo del recorrido: del punto donde estoy a la celda de acceso más
+// cercana del rack destino. Devuelve también dónde termina, porque ahí empieza
+// el tramo siguiente.
+function tramoHasta(grilla, desde, rack) {
+  const metas = celdasDeAcceso(grilla, geometriaDe(rack));
+  const r = calcularRutaAEstrella(grilla, desde, metas);
+  return r && { celdas: r.celdas, distancia: r.distancia, fin: r.celdas[r.celdas.length - 1] };
+}
+
+// Recorre las paradas en el orden dado, encadenando los tramos: cada uno arranca
+// donde terminó el anterior. Devuelve null si alguna quedó inalcanzable.
+function recorrerEnOrden(grilla, inicio, racksEnOrden) {
+  let desde = inicio;
+  let total = 0;
+  const celdas = [inicio];
+
+  for (const rack of racksEnOrden) {
+    const tramo = tramoHasta(grilla, desde, rack);
+    if (!tramo) return { inalcanzable: rack };
+    total += tramo.distancia;
+    celdas.push(...tramo.celdas.slice(1)); // sin repetir la celda de empalme
+    desde = tramo.fin;
+  }
+  return { celdas, distancia: total };
+}
+
+function* permutaciones(items) {
+  if (items.length <= 1) { yield items; return; }
+  for (let i = 0; i < items.length; i++) {
+    const resto = [...items.slice(0, i), ...items.slice(i + 1)];
+    for (const p of permutaciones(resto)) yield [items[i], ...p];
+  }
+}
+
+// Prueba todos los órdenes posibles y se queda con el más corto. Cada orden se
+// evalúa recorriéndolo de verdad, no sobre una matriz de distancias
+// precalculada: de qué celda del rack sales cambia según de dónde vengas, y una
+// matriz fija daría un orden óptimo para un recorrido que no es el que se dibuja.
+function mejorRecorrido(grilla, inicio, racks) {
+  let mejor = null;
+  for (const orden of permutaciones(racks)) {
+    const r = recorrerEnOrden(grilla, inicio, orden);
+    if (r.inalcanzable) return r;
+    if (!mejor || r.distancia < mejor.distancia) mejor = { ...r, orden };
+  }
+  return mejor;
 }
 
 document.getElementById('btnCalcularRuta').addEventListener('click', () => {
   const almacenCode = document.getElementById('filtroMapaAlmacen').value;
-  const rackId = document.getElementById('campoRutaDestino').value;
   const resultadoEl = document.getElementById('resultadoRuta');
-
   const almacen = almacenPorCodigo(almacenCode);
-  const rack = layoutRacks.find((r) => r.id === rackId);
-  if (!almacen || !rack) {
-    resultadoEl.textContent = 'Elige un almacén y un rack de destino.';
+  if (!almacen) {
+    resultadoEl.textContent = 'Elige un almacén arriba.';
     return;
   }
 
-  const racks = racksDe(almacen.id);
-  const grilla = construirGrilla(almacen, racks);
-  const metas = celdasDeAcceso(grilla, geometriaDe(rack));
-  const puerta = entradaDe(almacen);
-  const resultado = calcularRutaAEstrella(grilla, [puerta.x, puerta.y], metas);
+  const ids = paradasElegidas();
+  if (ids.length === 0) {
+    resultadoEl.textContent = 'Marca al menos un rack para armar el recorrido.';
+    return;
+  }
+  if (ids.length > MAX_PARADAS_RUTA) {
+    resultadoEl.textContent =
+      `De a ${MAX_PARADAS_RUTA} racks como máximo: con más, encontrar el orden realmente más corto deja de ser instantáneo. Marcaste ${ids.length}.`;
+    return;
+  }
 
-  if (!resultado) {
-    resultadoEl.textContent = `No hay forma de llegar a ${rack.code}: quedó encerrado por otros racks.`;
+  const racks = ids.map((id) => layoutRacks.find((r) => r.id === id)).filter(Boolean);
+  const grilla = construirGrilla(almacen, racksDe(almacen.id));
+  const puerta = entradaDe(almacen);
+  const resultado = mejorRecorrido(grilla, [puerta.x, puerta.y], racks);
+
+  if (resultado?.inalcanzable) {
+    resultadoEl.textContent = `No hay forma de llegar a ${resultado.inalcanzable.code}: quedó encerrado por otros racks.`;
+    rutaActual = null;
+  } else if (!resultado) {
+    resultadoEl.textContent = 'No se pudo calcular el recorrido.';
     rutaActual = null;
   } else {
+    const paso = ['Entrada', ...resultado.orden.map((r) => r.code)].join(' → ');
     resultadoEl.textContent =
-      `Entrada → ${rack.code}: ${resultado.distancia.toFixed(1)} m recorriendo ${resultado.celdas.length} celdas.`;
+      `${paso}: ${resultado.distancia.toFixed(1)} m recorriendo ${resultado.celdas.length} celdas.`;
     rutaActual = { almacenCode, celdas: resultado.celdas };
   }
 
@@ -564,14 +680,16 @@ document.getElementById('btnCalcularRuta').addEventListener('click', () => {
 
 document.getElementById('btnLimpiarRuta').addEventListener('click', () => {
   rutaActual = null;
-  document.getElementById('resultadoRuta').textContent = '';
   document.getElementById('btnLimpiarRuta').hidden = true;
-  renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
+  document.getElementById('resultadoRuta').textContent = '';
+  document.querySelectorAll('#listaParadasRuta input:checked').forEach((c) => { c.checked = false; });
+  repintar();
 });
 
-// =============================================================================
-//  SELECCIÓN: TAMAÑO, GIRO Y ELIMINACIÓN DE UN RACK
-// =============================================================================
+document.getElementById('listaParadasRuta').addEventListener('change', () => {
+  // La ruta dibujada ya no corresponde a lo que está marcado.
+  if (rutaActual) invalidarRuta();
+});
 
 function repintar() {
   renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
@@ -682,6 +800,64 @@ function actualizarPanelAlmacen() {
 }
 
 document.getElementById('filtroMapaAlmacen').addEventListener('change', actualizarPanelAlmacen);
+
+// Los cambios sin guardar son de UN almacén. Si se pudiera cambiar de almacén
+// arrastrándolos, "Guardar layout" mandaría también los del otro, y un rack
+// mal puesto allá bloquearía lo que se acaba de acomodar acá. Antes de cambiar
+// hay que resolverlos.
+let almacenEnVista = '';
+
+// El listener va en CAPTURA sobre document a propósito. Los listeners del
+// propio <select> corren en orden de registro y el de mapa-modal.js se
+// registra primero, así que un listener normal llegaría tarde: el plano ya se
+// habría repintado con el otro almacén antes de preguntar nada. En la fase de
+// captura este corre antes que todos ellos y puede frenar el cambio.
+document.addEventListener('change', (evento) => {
+  if (evento.target.id !== 'filtroMapaAlmacen') return;
+
+  if (!hayCambiosPendientes()) {
+    almacenEnVista = evento.target.value;
+    return;
+  }
+
+  const destino = evento.target.value;
+  evento.stopPropagation();
+
+  // Se deshace la selección hasta que el usuario decida qué hacer.
+  evento.target.value = almacenEnVista;
+  confirmarDescartarYCambiar(destino);
+}, true);
+
+function confirmarDescartarYCambiar(destino) {
+  const n = racksModificados.size + entradaModificada.size;
+  const nombre = almacenPorCodigo(destino)?.name ?? 'todos los almacenes';
+
+  document.getElementById('modalConfirmarTitulo').textContent = 'Cambios sin guardar';
+  document.getElementById('modalConfirmarMensaje').textContent =
+    `Hay ${n} cambio${n === 1 ? '' : 's'} sin guardar en este plano. Si pasas a ${nombre} se descartan. ` +
+    'Si prefieres conservarlos, cancela y usa "Guardar layout".';
+
+  const btnViejo = document.getElementById('btnAceptarConfirmar');
+  const aceptar = btnViejo.cloneNode(true); // limpia listeners de una confirmación anterior
+  aceptar.textContent = 'Descartar y cambiar';
+  btnViejo.replaceWith(aceptar);
+
+  aceptar.addEventListener('click', () => {
+    racksModificados.clear();
+    entradaModificada.clear();
+    deseleccionarRack();
+    actualizarBarraEdicion();
+    ocultarModal('modalConfirmar');
+
+    const select = document.getElementById('filtroMapaAlmacen');
+    select.value = destino;
+    almacenEnVista = destino;
+    aplicarFiltroMapa();
+    actualizarPanelAlmacen();
+  }, { once: true });
+
+  mostrarModal('modalConfirmar');
+}
 
 document.getElementById('btnAplicarTamanoAlmacen').addEventListener('click', async () => {
   const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
@@ -864,6 +1040,9 @@ document.getElementById('formNuevoRack').addEventListener('submit', async (event
   boton.textContent = 'Creando…';
 
   try {
+    const problema = primerErrorDelFormulario(evento.target);
+    if (problema) throw new Error(problema);
+
     const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
     if (!almacen) throw new Error('Elige un almacén antes de crear un rack.');
 
@@ -906,3 +1085,178 @@ async function recargarLayout() {
   inicializarLayout(layout);
   inicializarMapa(mapa); // ya repinta el plano y el detalle
 }
+
+
+// =============================================================================
+//  CREAR Y ELIMINAR ALMACENES
+// =============================================================================
+
+// Los <select> de almacén estaban escritos a mano en el HTML con los tres del
+// seed. Poblarlos desde la lista real es lo que hace que crear un almacén
+// sirva de algo: sin esto el almacén nuevo existiria en la base y en ninguna
+// pantalla. Se usa new Option() y no innerHTML porque el nombre lo escribe un
+// usuario y ahi entraria como markup.
+function poblarSelectsDeAlmacen() {
+  const conTodos = { filtroMapaAlmacen: 'Almacén: todos' };
+
+  for (const id of ['filtroMapaAlmacen', 'campoAlmacen', 'campoUbicAlmacen']) {
+    const select = document.getElementById(id);
+    if (!select) continue;
+
+    const anterior = select.value;
+    const placeholder = conTodos[id];
+    select.innerHTML = '';
+    if (placeholder) select.add(new Option(placeholder, ''));
+    for (const almacen of layoutAlmacenes) select.add(new Option(almacen.name, almacen.code));
+
+    // Si el almacén que estaba elegido sigue existiendo se conserva; si lo
+    // acaban de borrar, cae al placeholder o al primero de la lista.
+    const sigueVivo = layoutAlmacenes.some((a) => a.code === anterior);
+    select.value = sigueVivo ? anterior : (placeholder ? '' : (layoutAlmacenes[0]?.code ?? ''));
+    sincronizarSelectMejorado(id);
+  }
+
+  almacenEnVista = document.getElementById('filtroMapaAlmacen').value;
+  document.getElementById('contextoAlmacenes').textContent =
+    layoutAlmacenes.map((a) => a.name).join(' · ');
+}
+
+// Los <form> llevan novalidate para que el navegador no dibuje sus propios
+// globos encima del modal. Las reglas declarativas (required, maxlength,
+// pattern) igual se evaluan: esto las traduce al mismo recuadro donde caen los
+// errores que vienen de la base, para que el usuario mire siempre al mismo
+// sitio. El title del campo es el mensaje, que por eso esta redactado como
+// explicacion y no como nota al pie.
+function primerErrorDelFormulario(form) {
+  const campo = form.querySelector(':invalid');
+  if (!campo) return null;
+
+  campo.focus();
+  const etiqueta = form.querySelector(`label[for="${campo.id}"]`)?.textContent?.trim() ?? 'Un campo';
+  if (campo.validity.valueMissing) return `Falta completar "${etiqueta}".`;
+  if (campo.validity.tooLong) return `"${etiqueta}" no puede pasar de ${campo.maxLength} caracteres.`;
+  return campo.title || `"${etiqueta}" no tiene el formato esperado.`;
+}
+
+const cerrarModalAlmacen = () => ocultarModal('modalNuevoAlmacen');
+document.getElementById('btnCerrarModalAlmacen').addEventListener('click', cerrarModalAlmacen);
+document.getElementById('btnCancelarNuevoAlmacen').addEventListener('click', cerrarModalAlmacen);
+document.getElementById('modalNuevoAlmacen').addEventListener('click', (e) => {
+  if (e.target.id === 'modalNuevoAlmacen') cerrarModalAlmacen();
+});
+
+function refrescarEstimacionAlmacen() {
+  const leer = (id) => parseInt(document.getElementById(id).value, 10) || 0;
+  const ancho = leer('campoNuevoAlmacenAncho');
+  const alto = leer('campoNuevoAlmacenAlto');
+  document.getElementById('estimacionNuevoAlmacen').textContent =
+    `${formatearNumero(ancho * alto)} m² de piso.`;
+}
+
+['campoNuevoAlmacenAncho', 'campoNuevoAlmacenAlto']
+  .forEach((id) => document.getElementById(id).addEventListener('input', refrescarEstimacionAlmacen));
+
+document.getElementById('btnNuevoAlmacen').addEventListener('click', () => {
+  document.getElementById('formNuevoAlmacen').reset();
+  document.getElementById('modalAlmacenError').hidden = true;
+  refrescarEstimacionAlmacen();
+  mostrarModal('modalNuevoAlmacen');
+});
+
+document.getElementById('formNuevoAlmacen').addEventListener('submit', async (evento) => {
+  evento.preventDefault();
+  const boton = document.getElementById('btnGuardarNuevoAlmacen');
+  const errorEl = document.getElementById('modalAlmacenError');
+  errorEl.hidden = true;
+  boton.disabled = true;
+  boton.textContent = 'Creando…';
+
+  try {
+    const problema = primerErrorDelFormulario(evento.target);
+    if (problema) throw new Error(problema);
+
+    const creado = await InventarioAPI.crearAlmacen({
+      code: document.getElementById('campoNuevoAlmacenCodigo').value.trim(),
+      name: document.getElementById('campoNuevoAlmacenNombre').value.trim(),
+      address: document.getElementById('campoNuevoAlmacenDireccion').value.trim() || null,
+      gridAncho: parseInt(document.getElementById('campoNuevoAlmacenAncho').value, 10),
+      gridAlto: parseInt(document.getElementById('campoNuevoAlmacenAlto').value, 10),
+    });
+
+    cerrarModalAlmacen();
+    await recargarLayout();
+
+    // Se abre el almacén recién creado: es lo único que se puede hacer con él,
+    // y el plano vacío deja claro que el siguiente paso es poner racks.
+    const select = document.getElementById('filtroMapaAlmacen');
+    select.value = creado.code;
+    almacenEnVista = creado.code;
+    sincronizarSelectMejorado('filtroMapaAlmacen');
+    aplicarFiltroMapa();
+    actualizarPanelAlmacen();
+
+    mostrarToast(`${creado.name} creado (${creado.grid_ancho} × ${creado.grid_alto} m). Agrégale racks.`, 'ok');
+  } catch (err) {
+    errorEl.textContent = err.message ?? 'No se pudo crear el almacén.';
+    errorEl.hidden = false;
+    errorEl.focus();
+  } finally {
+    boton.disabled = false;
+    boton.textContent = 'Crear almacén';
+  }
+});
+
+document.getElementById('btnEliminarAlmacen').addEventListener('click', () => {
+  const almacen = almacenPorCodigo(document.getElementById('filtroMapaAlmacen').value);
+  if (!almacen) return;
+
+  // Con racks dentro no se abre la confirmación: preguntar "¿seguro?" para
+  // después no dejar aceptar es una pregunta de mentira. El toast dice qué
+  // falta hacer, que es lo único accionable acá.
+  const racks = racksDe(almacen.id).length;
+  if (racks > 0) {
+    mostrarToast(
+      `${almacen.name} todavía tiene ${racks} rack${racks === 1 ? '' : 's'}. Elimínalos primero: un almacén solo se borra vacío.`,
+      'bad'
+    );
+    return;
+  }
+
+  document.getElementById('modalConfirmarTitulo').textContent = 'Eliminar almacén';
+  document.getElementById('modalConfirmarMensaje').textContent =
+    `¿Eliminar ${almacen.name}? Solo se puede si no tiene inventario ni historial; si lo tiene, la operación se rechaza y te dice qué estorba.`;
+
+  const btnViejo = document.getElementById('btnAceptarConfirmar');
+  const aceptar = btnViejo.cloneNode(true); // limpia listeners de una confirmación anterior
+  aceptar.textContent = 'Eliminar';
+  btnViejo.replaceWith(aceptar);
+
+  aceptar.addEventListener('click', async () => {
+    aceptar.disabled = true;
+    aceptar.textContent = 'Eliminando…';
+    try {
+      const resultado = await InventarioAPI.eliminarAlmacen(almacen.code);
+
+      // Lo que estuviera sin guardar de este almacén ya no tiene dónde ir.
+      entradaModificada.delete(almacen.id);
+      racksDe(almacen.id).forEach((r) => racksModificados.delete(r.id));
+      deseleccionarRack();
+      actualizarBarraEdicion();
+
+      ocultarModal('modalConfirmar');
+      await recargarLayout();
+      actualizarPanelAlmacen();
+      mostrarToast(resultado.mensaje ?? 'Almacén eliminado.', 'ok');
+    } catch (err) {
+      // Si tiene inventario o historial, el mensaje viene de la base con el
+      // detalle exacto: se muestra tal cual.
+      ocultarModal('modalConfirmar');
+      mostrarToast(err.message ?? 'No se pudo eliminar el almacén.', 'bad');
+    } finally {
+      aceptar.disabled = false;
+      aceptar.textContent = 'Eliminar';
+    }
+  }, { once: true });
+
+  mostrarModal('modalConfirmar');
+});

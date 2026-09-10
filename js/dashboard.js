@@ -212,6 +212,16 @@ function crearBotonAccion(texto, onClick) {
 }
 
 // Qué botones aparecen depende de `situacion`, no de `status`: un movimiento
+// La misma columna position_id significa el destino en una ENTRADA y el origen
+// en una SALIDA (así está en inventory_movements desde la 01), por eso se rotula
+// con una flecha en vez de dar el código a secas: "A-03-02" solo no dice si el
+// par entró ahí o salió de ahí. Un AJUSTE contable puede no tener sitio.
+function ubicacionDelMovimiento(mov) {
+  if (!mov.posicion) return '—';
+  const flecha = { DESTINO: '→', ORIGEN: '←' }[mov.ubicacion_rol] ?? '·';
+  return `${flecha} ${mov.rack} · ${mov.posicion}`;
+}
+
 // APROBADO todavía puede estar esperando ejecución física, y ahí el único
 // botón útil es "Ejecutar", no "Aprobar" de nuevo.
 function filaMovimiento(mov) {
@@ -231,6 +241,7 @@ function filaMovimiento(mov) {
     <td>${tipoTexto}</td>
     <td class="celda-num">${mov.quantity}</td>
     <td class="celda-texto">${mov.reason ?? '—'}</td>
+    <td class="celda-texto">${ubicacionDelMovimiento(mov)}</td>
     <td><span class="pill ${clase}">${texto}</span></td>
     <td class="acciones"></td>
   `;
@@ -257,7 +268,7 @@ function renderMovimientos(movimientos) {
   cuerpo.innerHTML = '';
 
   if (movimientos.length === 0) {
-    cuerpo.innerHTML = `<tr><td colspan="8">
+    cuerpo.innerHTML = `<tr><td colspan="9">
       <div class="estado-vacio"><p>Sin movimientos todavía</p><p>Crea el primero con "+ Nuevo movimiento".</p></div>
     </td></tr>`;
     return;

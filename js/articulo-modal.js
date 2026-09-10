@@ -267,6 +267,9 @@ function confirmarEliminarArticulo(articulo) {
 
   const btnAceptar = document.getElementById('btnAceptarConfirmar');
   const nuevoBoton = btnAceptar.cloneNode(true); // limpia listeners de una confirmación anterior
+  // El modal es compartido y el clon hereda el texto que dejó el uso anterior:
+  // cada quien declara el suyo o el botón termina diciendo cualquier cosa.
+  nuevoBoton.textContent = 'Eliminar';
   btnAceptar.replaceWith(nuevoBoton);
 
   nuevoBoton.addEventListener('click', async () => {
