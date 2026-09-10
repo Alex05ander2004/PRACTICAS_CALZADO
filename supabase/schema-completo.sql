@@ -12,6 +12,10 @@
 --     08_rutas_almacen.sql          -> (superada por la 09) grafo declarado a mano
 --     09_layout_editor.sql          -> plano editable por geometria + rutas con A*
 --     10_crud_racks.sql             -> crear/eliminar racks desde el editor
+--     11_capacidad_y_tamano.sql     -> tamano del almacen y capacidad en cajas
+--     12_entrada_en_la_pared.sql    -> la entrada solo existe sobre una pared
+--     13_crud_almacenes.sql         -> crear/eliminar almacenes
+--     14_prefijo_de_posicion_alfanumerico.sql -> prefijo de posicion con digitos
 --
 --  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
 --  vez sobre una base vacía. Es idempotente. Requiere PostgreSQL 15+.
@@ -4299,6 +4303,74 @@ $fn$;
 comment on function public.fn_pegar_a_pared is
   'Lleva un punto a la pared más cercana del plano. La entrada del almacén siempre pasa por acá: una puerta en medio del piso no existe.';
 
+create or replace function public.fn_celda_tapada(
+  p_warehouse_id uuid,
+  p_x            integer,
+  p_y            integer
+)
+returns boolean
+language sql
+stable
+set search_path = public
+as $fn$
+  select exists (
+    select 1 from public.racks
+     where warehouse_id = p_warehouse_id
+       and p_x >= grid_x and p_x < grid_x + grid_ancho
+       and p_y >= grid_y and p_y < grid_y + grid_alto
+  );
+$fn$;
+
+-- Pegar a la pared no alcanza: esa pared puede tener un rack apoyado encima.
+-- Cuando la puerta se reacomoda sola (al redimensionar el almacén, o en el
+-- backfill de acá abajo) no hay ningún gesto del usuario que rechazar, así que
+-- se busca la celda libre más cercana del perímetro en vez de fallar.
+create or replace function public.fn_puerta_libre(
+  p_warehouse_id uuid,
+  p_x            integer,
+  p_y            integer,
+  p_ancho        integer,
+  p_alto         integer
+)
+returns integer[]
+language plpgsql
+stable
+set search_path = public
+as $fn$
+declare
+  v_punto integer[];
+  v_libre record;
+begin
+  v_punto := public.fn_pegar_a_pared(p_x, p_y, p_ancho, p_alto);
+
+  if not public.fn_celda_tapada(p_warehouse_id, v_punto[1], v_punto[2]) then
+    return v_punto;
+  end if;
+
+  select c.x, c.y into v_libre
+    from (
+      select g.n as x, 0 as y            from generate_series(0, p_ancho - 1) g(n)
+      union all
+      select g.n,      p_alto - 1        from generate_series(0, p_ancho - 1) g(n)
+      union all
+      select 0,        g.n               from generate_series(1, p_alto - 2)  g(n)
+      union all
+      select p_ancho - 1, g.n            from generate_series(1, p_alto - 2)  g(n)
+    ) c
+   where not public.fn_celda_tapada(p_warehouse_id, c.x, c.y)
+   order by (c.x - p_x) * (c.x - p_x) + (c.y - p_y) * (c.y - p_y)
+   limit 1;
+
+  -- Perímetro entero tapado (un almacén así no se puede operar de todos modos):
+  -- se devuelve el borde natural y que lo resuelva quien mueva los racks.
+  if v_libre.x is null then
+    return v_punto;
+  end if;
+
+  return array[v_libre.x, v_libre.y];
+end;
+$fn$;
+
 
 -- =============================================================================
 --  BLOQUE B — LAS ENTRADAS QUE YA ESTABAN, A LA PARED
@@ -4307,9 +4379,12 @@ comment on function public.fn_pegar_a_pared is
 -- que escribió la migración 09 lo violarían y la migración abortaría.
 alter table public.warehouses drop constraint if exists ck_warehouses_grilla;
 
-update public.warehouses
-   set entrada_x = (public.fn_pegar_a_pared(entrada_x, entrada_y, grid_ancho, grid_alto))[1],
-       entrada_y = (public.fn_pegar_a_pared(entrada_x, entrada_y, grid_ancho, grid_alto))[2];
+update public.warehouses w
+   set entrada_x = p.punto[1],
+       entrada_y = p.punto[2]
+  from (select id, public.fn_puerta_libre(id, entrada_x, entrada_y, grid_ancho, grid_alto) as punto
+          from public.warehouses) p
+ where p.id = w.id;
 
 alter table public.warehouses
   add constraint ck_warehouses_grilla check (
@@ -4425,7 +4500,7 @@ begin
 
   -- La entrada sí se reacomoda sola: es un punto de referencia del plano, no
   -- mercadería de nadie.
-  v_punto := public.fn_pegar_a_pared(v_wh.entrada_x, v_wh.entrada_y, p_grid_ancho, p_grid_alto);
+  v_punto := public.fn_puerta_libre(v_wh.id, v_wh.entrada_x, v_wh.entrada_y, p_grid_ancho, p_grid_alto);
 
   update public.warehouses
      set grid_ancho = p_grid_ancho,
@@ -4437,6 +4512,63 @@ begin
   returning * into v_wh;
 
   return v_wh;
+end;
+$fn$;
+
+
+-- =============================================================================
+--  BLOQUE E — UN RACK TAMPOCO PUEDE TAPAR LA PUERTA
+-- =============================================================================
+-- mover_entrada_almacen ya impide llevar la puerta encima de un rack. Pero la
+-- misma superposición se puede armar desde el otro lado: arrastrando el rack
+-- sobre la puerta. Es la misma regla dicha desde el otro extremo, y va donde
+-- ya viven las demás reglas de geometría — el trigger de la migración 09.
+--
+-- No es cosmético: A* arranca en la celda de la entrada, y si está bloqueada
+-- calcularRutaAEstrella devuelve null y la UI dice "el rack quedó encerrado",
+-- que es un diagnóstico falso. El problema no era el rack de destino.
+create or replace function public.fn_validar_geometria_rack()
+returns trigger
+language plpgsql
+as $fn$
+declare
+  v_alm       public.warehouses;
+  v_conflicto text;
+begin
+  select * into v_alm from public.warehouses where id = new.warehouse_id;
+
+  if new.grid_x + new.grid_ancho > v_alm.grid_ancho
+     or new.grid_y + new.grid_alto > v_alm.grid_alto then
+    raise exception 'El rack % no cabe: se sale del plano del almacén (% x % celdas).',
+      new.code, v_alm.grid_ancho, v_alm.grid_alto
+      using errcode = 'check_violation';
+  end if;
+
+  -- Dos rectángulos se pisan solo si se solapan en LOS DOS ejes a la vez.
+  select code into v_conflicto
+    from public.racks
+   where warehouse_id = new.warehouse_id
+     and id <> new.id
+     and new.grid_x < grid_x + grid_ancho
+     and grid_x     < new.grid_x + new.grid_ancho
+     and new.grid_y < grid_y + grid_alto
+     and grid_y     < new.grid_y + new.grid_alto
+   limit 1;
+
+  if v_conflicto is not null then
+    raise exception 'El rack % se superpone con el rack %. Muévelo a un espacio libre.',
+      new.code, v_conflicto
+      using errcode = 'check_violation';
+  end if;
+
+  if v_alm.entrada_x >= new.grid_x and v_alm.entrada_x < new.grid_x + new.grid_ancho
+     and v_alm.entrada_y >= new.grid_y and v_alm.entrada_y < new.grid_y + new.grid_alto then
+    raise exception 'El rack % taparía la entrada del almacén (celda %, %). Deja la puerta despejada.',
+      new.code, v_alm.entrada_x, v_alm.entrada_y
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
 end;
 $fn$;
 
@@ -4457,3 +4589,259 @@ select
 from public.warehouses
 order by code;
 -- Esperado: ninguna fila con pared NULL — todas las entradas tocan un borde.
+
+
+-- =============================================================================
+-- =============================================================================
+--  MIGRACIÓN 13 — CREAR Y ELIMINAR ALMACENES
+--
+--  Los tres almacenes venían del seed y no había forma de agregar un cuarto ni
+--  de borrar uno creado por error. Eliminar sigue el criterio de eliminar_rack:
+--  se borra el que está vacío, nunca el que ya guardó mercadería.
+-- =============================================================================
+-- =============================================================================
+
+-- =============================================================================
+--  BLOQUE A — EL DEFAULT DE LA ENTRADA VIOLABA SU PROPIO CHECK
+-- =============================================================================
+-- La migración 09 puso entrada (20, 28) por default sobre un plano de 40 x 30.
+-- La 12 agregó el CHECK que exige que la entrada toque una pared: con alto 30
+-- la pared de abajo es y = 29, así que 28 queda una celda adentro. Nadie lo
+-- notó porque hasta ahora ningún INSERT creaba almacenes — el primero habría
+-- reventado contra ck_warehouses_grilla sin explicar por qué.
+alter table public.warehouses
+  alter column entrada_y set default 29;
+
+
+-- =============================================================================
+--  BLOQUE A.2 — TEXTO CON LÍMITE
+-- =============================================================================
+-- name y address eran text sin tope. Un maxlength en el formulario no es una
+-- garantía — se salta con las herramientas del navegador o llamando a la RPC
+-- directo — y un nombre de mil caracteres rompe el <select> de almacenes y
+-- todas las tablas que lo muestran. El tope va donde sí manda.
+-- Los límites son los mismos que declara el formulario (index.html).
+alter table public.warehouses drop constraint if exists ck_warehouses_texto;
+alter table public.warehouses
+  add constraint ck_warehouses_texto check (
+    length(code) <= 12
+    and length(btrim(name)) between 1 and 40
+    and (address is null or length(btrim(address)) <= 120)
+  );
+
+
+-- =============================================================================
+--  BLOQUE B — CREAR UN ALMACÉN
+-- =============================================================================
+create or replace function public.crear_almacen(
+  p_code       text,
+  p_name       text,
+  p_grid_ancho integer default 40,
+  p_grid_alto  integer default 30,
+  p_address    text    default null
+)
+returns public.warehouses
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_code text;
+  v_wh   public.warehouses;
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+
+  v_code := upper(trim(p_code));
+
+  -- Mismo formato que el CHECK de la tabla, validado acá para poder decir qué
+  -- se espera en vez de devolver una violación de constraint en crudo.
+  if v_code !~ '^[A-Z0-9]{2,10}(-[A-Z0-9]{1,10})*$' then
+    raise exception 'El código % no sirve: usa letras y números en mayúscula, separados por guiones (por ejemplo ALM-D o BOD-02).', v_code;
+  end if;
+
+  if coalesce(trim(p_name), '') = '' then
+    raise exception 'El almacén necesita un nombre.';
+  end if;
+
+  -- Se revisan acá además del CHECK para poder decir cuál campo se pasó y de
+  -- cuánto; el constraint solo diría "ck_warehouses_texto".
+  if length(v_code) > 12 then
+    raise exception 'El código no puede pasar de 12 caracteres (tiene %).', length(v_code);
+  end if;
+
+  if length(trim(p_name)) > 40 then
+    raise exception 'El nombre no puede pasar de 40 caracteres (tiene %).', length(trim(p_name));
+  end if;
+
+  if length(coalesce(trim(p_address), '')) > 120 then
+    raise exception 'La dirección no puede pasar de 120 caracteres (tiene %).', length(trim(p_address));
+  end if;
+
+  if p_grid_ancho not between 10 and 80 or p_grid_alto not between 10 and 80 then
+    raise exception 'El almacén debe medir entre 10 y 80 m por lado. Se pidió % x %.',
+      p_grid_ancho, p_grid_alto;
+  end if;
+
+  if exists (select 1 from public.warehouses where code = v_code) then
+    raise exception 'Ya existe un almacén con el código %.', v_code;
+  end if;
+
+  -- El último carácter del código encabeza los códigos de posición de sus
+  -- racks (ALM-D -> D-07-01, ALM-04 -> 4-07-01; ver crear_rack). Dos almacenes
+  -- que terminen igual generarían posiciones que se leen idénticas en el mapa
+  -- aunque estén en edificios distintos. Puede ser letra o dígito: lo que
+  -- importa es que no se repita (positions.code lo admite desde la 14).
+  if exists (select 1 from public.warehouses where right(code, 1) = right(v_code, 1)) then
+    raise exception 'El código % termina en "%", igual que un almacén que ya existe. De ese carácter salen los códigos de posición, así que debe ser único.',
+      v_code, right(v_code, 1);
+  end if;
+
+  -- Puerta al centro de la pared de abajo: es la única pared que con seguridad
+  -- está libre, porque el almacén nace sin un solo rack.
+  insert into public.warehouses (code, name, address, grid_ancho, grid_alto, entrada_x, entrada_y)
+  values (v_code, trim(p_name), nullif(trim(p_address), ''),
+          p_grid_ancho, p_grid_alto, p_grid_ancho / 2, p_grid_alto - 1)
+  returning * into v_wh;
+
+  return v_wh;
+end;
+$fn$;
+
+grant execute on function public.crear_almacen(text, text, integer, integer, text) to authenticated;
+
+comment on function public.crear_almacen is
+  'Da de alta un almacén vacío con la puerta al centro de la pared inferior. Exige que el último carácter del código sea único: de ahí salen los códigos de posición.';
+
+
+-- =============================================================================
+--  BLOQUE C — ELIMINAR UN ALMACÉN (solo si está realmente vacío)
+-- =============================================================================
+-- Las tablas que apuntan a warehouses están en on delete restrict menos
+-- warehouse_nodes, que va en cascade (el grafo de ruteo se regenera solo). Un
+-- DELETE a secas fallaría con un error de FK que no dice cuál estorba; acá se
+-- revisa una por una y se nombra el problema.
+create or replace function public.eliminar_almacen(p_warehouse_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_wh        public.warehouses;
+  v_racks     text;
+  v_articulos integer;
+  v_historial integer;
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+
+  select * into v_wh from public.warehouses where code = p_warehouse_code;
+  if v_wh.id is null then
+    raise exception 'No existe el almacén %.', p_warehouse_code;
+  end if;
+
+  select string_agg(code, ', ' order by code) into v_racks
+    from public.racks where warehouse_id = v_wh.id;
+
+  if v_racks is not null then
+    raise exception 'No se puede eliminar %: todavía tiene racks (%). Bórralos primero desde el editor de plano.',
+      v_wh.name, v_racks;
+  end if;
+
+  select count(*) into v_articulos
+    from public.inventory where warehouse_id = v_wh.id;
+
+  if v_articulos > 0 then
+    raise exception 'No se puede eliminar %: hay % artículo(s) registrados en él. Muévelos a otro almacén primero.',
+      v_wh.name, v_articulos;
+  end if;
+
+  -- Sin racks ni inventario todavía puede quedar historial: órdenes, asientos
+  -- del kardex o conteos de un stock que ya se dio de baja. Borrar el almacén
+  -- dejaría esos registros apuntando a la nada.
+  select
+    (select count(*) from public.inventory_orders  where warehouse_id = v_wh.id)
+  + (select count(*) from public.stock_ledger      where warehouse_id = v_wh.id)
+  + (select count(*) from public.inventory_counts  where warehouse_id = v_wh.id)
+  into v_historial;
+
+  if v_historial > 0 then
+    raise exception 'No se puede eliminar %: tiene % registro(s) de historial (órdenes, kardex o conteos). Borrarlo dejaría el kardex sin rastro de dónde ocurrieron.',
+      v_wh.name, v_historial;
+  end if;
+
+  delete from public.warehouses where id = v_wh.id;
+
+  return jsonb_build_object(
+    'estado',  'ELIMINADO',
+    'mensaje', v_wh.name || ' eliminado.'
+  );
+end;
+$fn$;
+
+grant execute on function public.eliminar_almacen(text) to authenticated;
+
+comment on function public.eliminar_almacen is
+  'Borra un almacén solo si está vacío: sin racks, sin inventario y sin historial. Nombra qué estorba en vez de devolver una violación de FK.';
+
+
+-- =============================================================================
+--  BLOQUE D — RLS: FALTABA LA POLÍTICA DE DELETE
+-- =============================================================================
+-- Las funciones de arriba son security definer y no la necesitan, pero sin
+-- política de delete la tabla queda con una regla implícita "nadie borra
+-- nunca", que contradice lo que el sistema ahora sí permite.
+drop policy if exists p_warehouses_delete on public.warehouses;
+create policy p_warehouses_delete on public.warehouses
+  for delete to authenticated using ((select public.fn_es_al_menos_supervisor()));
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+select
+  code                             as almacen,
+  name                             as nombre,
+  grid_ancho || ' x ' || grid_alto as plano,
+  entrada_x || ',' || entrada_y    as entrada,
+  (select count(*) from public.racks r where r.warehouse_id = w.id) as racks
+from public.warehouses w
+order by code;
+
+
+-- =============================================================================
+-- =============================================================================
+--  MIGRACIÓN 14 — EL PREFIJO DE UNA POSICIÓN TAMBIÉN PUEDE SER UN DÍGITO
+--
+--  El prefijo del código de posición es el último carácter del código del
+--  almacén. warehouses.code siempre admitió dígitos, positions.code exigía
+--  letra: crear un rack en 'ALM-04' reventaba. Se relaja positions.
+-- =============================================================================
+-- =============================================================================
+
+-- =============================================================================
+--  BLOQUE A — positions.code ACEPTA UN PREFIJO ALFANUMÉRICO
+-- =============================================================================
+alter table public.positions drop constraint if exists positions_code_check;
+alter table public.positions
+  add constraint positions_code_check check (code ~ '^[A-Z0-9]-[0-9]{2}-[0-9]{2}$');
+
+comment on column public.positions.code is
+  'Dirección física: <PREFIJO DEL ALMACÉN>-<RACK 2 dígitos>-<SLOT 2 dígitos>, por ejemplo A-03-02 o 4-01-07. El prefijo es el último carácter del código del almacén y crear_almacen lo exige único.';
+
+
+-- =============================================================================
+--  VERIFICACIÓN
+-- =============================================================================
+-- Cada almacén con su prefijo y cuántas posiciones cuelgan de él. Ninguna fila
+-- debe salir con prefijo repetido: ahí es donde dos almacenes distintos
+-- generarían códigos de posición que se leen idénticos.
+select
+  w.code                                   as almacen,
+  right(w.code, 1)                         as prefijo,
+  count(distinct r.id)                     as racks,
+  count(p.id)                              as posiciones
+from public.warehouses w
+left join public.racks r     on r.warehouse_id = w.id
+left join public.positions p on p.rack_id      = r.id
+group by w.code
+order by w.code;
