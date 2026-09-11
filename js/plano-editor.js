@@ -766,10 +766,13 @@ async function refrescarCapacidadPanel() {
     const est = await InventarioAPI.estimarCapacidadRack({
       gridAncho: g.gridAncho, gridAlto: g.gridAlto, niveles, slotsPorNivel: null,
     });
+    // Cada nivel dice con qué objetivo se calculó: la regla es la misma para
+    // todos, los datos no — niño y adulto usan caja y modelo distintos.
     const detalle = (est.por_nivel ?? [])
-      .map((n) => `n${n.nivel}: ${n.casilleros} de ${n.ancho_cm} cm`)
+      .map((n) => `n${n.nivel}${n.publico ? ' ' + n.publico : ''}: ${n.casilleros} de ${n.ancho_cm} cm, ` +
+                  `${formatearNumero(n.cajas_por_casillero)} c/u` + (n.objetivo ? ` (un modelo ≈ ${n.objetivo})` : ''))
       .join(' · ');
-    nota.textContent = `${hoy} A medida de un modelo: ${est.posiciones} casilleros, ${formatearNumero(est.cajas)} cajas (${detalle}).`;
+    nota.textContent = `${hoy} A medida de un modelo: ${est.posiciones} casilleros, ${formatearNumero(est.cajas)} cajas — ${detalle}.`;
   } catch (err) {
     nota.textContent = hoy;
   }
@@ -1060,7 +1063,9 @@ async function refrescarEstimacionNuevoRack() {
       slotsPorNivel: null,
     });
     const detalle = (est.por_nivel ?? [])
-      .map((n) => `nivel ${n.nivel}: ${n.casilleros} de ${n.ancho_cm} cm (${formatearNumero(n.cajas_por_casillero)} c/u)`)
+      .map((n) => `nivel ${n.nivel}${n.publico ? ` (${n.publico}, caja ${n.caja_cm} cm)` : ''}: ` +
+                  `${n.casilleros} de ${n.ancho_cm} cm, ${formatearNumero(n.cajas_por_casillero)} c/u` +
+                  (n.objetivo ? `, un modelo ≈ ${n.objetivo}` : ''))
       .join(' · ');
     salida.textContent = `${est.posiciones} casilleros · ${formatearNumero(est.cajas)} cajas — ${detalle}`;
   } catch (err) {
