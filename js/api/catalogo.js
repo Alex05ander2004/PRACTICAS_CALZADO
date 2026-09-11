@@ -40,7 +40,9 @@ const CatalogoAPI = {
   // embebidos. inventory es un arreglo porque el modelo soporta stock por
   // almacén; con un solo almacén (caso base del README) trae un elemento.
   async listarArticulos() {
-    const { data, error } = await supabaseClient
+    // Paginado por lo mismo que el mapa: pasadas las 1000 filas, PostgREST
+    // corta sin avisar. id desempata artículos creados en el mismo instante.
+    return traerTodasLasFilas(() => supabaseClient
       .from('inventory_items')
       .select(
         `
@@ -55,10 +57,8 @@ const CatalogoAPI = {
       `
       )
       .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-    return data;
+      .order('created_at', { ascending: false })
+      .order('id'));
   },
 
   async obtenerArticulo(itemId) {

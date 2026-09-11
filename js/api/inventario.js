@@ -18,15 +18,15 @@ const InventarioAPI = {
   // NULL cuando está libre). Es la consulta que responde "¿dónde meto lo que
   // acaba de llegar?".
   async obtenerMapaAlmacen() {
-    const { data, error } = await supabaseClient
+    // Paginado: son más de 3 000 filas y PostgREST corta en 1000 sin avisar.
+    // assignment_id desempata las tallas de un mismo casillero.
+    return traerTodasLasFilas(() => supabaseClient
       .from('v_mapa_almacen')
       .select('*')
       .order('almacen_code')
       .order('rack')
-      .order('posicion');
-
-    if (error) throw error;
-    return data;
+      .order('posicion')
+      .order('assignment_id'));
   },
 
   // Grafo de ruteo: nodos (un ENTRADA por almacén + un nodo por rack, con
@@ -270,13 +270,17 @@ const InventarioAPI = {
 
   // Todo lo que está fuera de lugar, por tipo (migración 21).
   async listarRevision() {
-    const { data, error } = await supabaseClient
+    // Cada fila queda identificada por su asignación, casillero o stock según
+    // el tipo; con todos en el orden, las páginas no se pisan.
+    return traerTodasLasFilas(() => supabaseClient
       .from('v_revision_ubicaciones')
       .select('*')
       .order('tipo')
-      .order('almacen_code');
-    if (error) throw error;
-    return data;
+      .order('almacen_code')
+      .order('sku')
+      .order('assignment_id')
+      .order('position_id')
+      .order('inventory_id'));
   },
 
   // Saca el sobrante de un casillero y lo reparte donde haya sitio para ese modelo.

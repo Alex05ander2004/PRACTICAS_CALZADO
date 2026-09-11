@@ -5,13 +5,13 @@
 // en 03_rls.sql, bloque E.8.
 const MovimientosAPI = {
   async listar() {
-    const { data, error } = await supabaseClient
+    // Paginado: el historial solo crece, y pasadas las 1000 filas PostgREST
+    // corta sin avisar. id desempata movimientos del mismo instante.
+    return traerTodasLasFilas(() => supabaseClient
       .from('v_movimientos_detalle')
       .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-    return data;
+      .order('created_at', { ascending: false })
+      .order('id'));
   },
 
   // { itemId, inventoryId, positionId, movementType, quantity, reason, notes, expectedQuantity }
