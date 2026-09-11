@@ -181,22 +181,20 @@
           <select id="filtroMapaAlmacen" class="filtro-select">
             <option value="">Almacén: todos</option>
           </select>
-          <label class="opcion-radio">
-            <input type="checkbox" id="filtroMapaSoloLibres" />
-            Solo posiciones libres
-          </label>
         </div>
-        <p id="contadorMapa" class="contador-resultados" role="status" aria-live="polite"></p>
+        <!-- Lo que se lee antes de mirar el plano: racks, casilleros ocupados,
+             cajas, modelos y lo que falta revisar del almacén elegido. -->
+        <div id="resumenAlmacen" class="resumen-almacen" role="status" aria-live="polite"></div>
 
-        <!-- Trabajo físico pendiente tras la migración 15: cajas que quedaron
-             en un nivel que su público ya no admite. Se oculta solo cuando no
-             queda ninguna. -->
-        <details id="panelReubicaciones" class="panel-reubicaciones" hidden>
+        <!-- Revisión de ubicaciones (migración 21): todo lo que está fuera de
+             lugar, agrupado por tipo, con su corrección. Se oculta cuando no
+             queda nada. -->
+        <details id="panelRevision" class="panel-reubicaciones" hidden>
           <summary>
-            <span id="reubicacionesTitulo">Pendientes de reubicar</span>
-            <span class="panel-reubicaciones-ayuda">mueve la caja y luego confirma acá</span>
+            <span id="revisionTitulo">Revisión de ubicaciones</span>
+            <span class="panel-reubicaciones-ayuda">cada corrección registra un movimiento físico: hazlo y luego confirma</span>
           </summary>
-          <div id="listaReubicaciones" class="reubicaciones-lista"></div>
+          <div id="listaRevision" class="revision-grupos"></div>
         </details>
 
         <div class="mapa-leyenda">
@@ -205,6 +203,7 @@
           <span class="mapa-leyenda-item"><span class="mapa-swatch reservada"></span>Reservada</span>
           <span class="mapa-leyenda-item"><span class="mapa-swatch en_picking"></span>En picking</span>
           <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Niveles 1-2 · infantil</span>
+          <span class="mapa-leyenda-item"><span class="mapa-swatch sobrecargado"></span>Sobrecargado</span>
         </div>
 
         <div class="plano-controles">
@@ -260,11 +259,7 @@
             <label for="campoRackNiveles">Niveles</label>
             <input id="campoRackNiveles" type="number" min="3" max="8" step="1" title="Entre 3 y 8: los dos niveles de abajo son para calzado infantil y hace falta al menos uno encima para el de adulto" />
           </div>
-          <div class="campo campo-chico">
-            <label for="campoRackSlots">Posiciones/nivel</label>
-            <input id="campoRackSlots" type="number" min="1" max="40" step="1" />
-          </div>
-          <button type="button" id="btnAplicarNivelesRack" class="btn-secundario btn-chico">Aplicar niveles</button>
+          <button type="button" id="btnAplicarNivelesRack" class="btn-secundario btn-chico" title="Aplica los niveles y ajusta los casilleros de cada nivel al tamaño de un modelo">Aplicar niveles y casilleros</button>
           <button type="button" id="btnRotarRack" class="btn-secundario btn-chico">Girar 90°</button>
           <button type="button" id="btnEliminarRack" class="btn-peligro btn-chico">Eliminar</button>
           <button type="button" id="btnDeseleccionarRack" class="btn-accion">Cerrar</button>
@@ -273,13 +268,24 @@
 
         <p id="resultadoRuta" class="contador-resultados" role="status" aria-live="polite"></p>
 
-        <div id="mapaPlano" class="mapa-plano-contenedor">
-          <p class="skeleton">Cargando plano…</p>
-        </div>
-
-        <h3 class="mapa-detalle-titulo">Detalle de posiciones</h3>
-        <div id="mapaVisual" class="mapa-visual">
-          <p class="skeleton">Cargando mapa…</p>
+        <!-- Planta y alzado: el plano aéreo a la izquierda y, al hacer clic en
+             un rack, su frente a la derecha — niveles apilados como la
+             estantería real, cada casillero con lo que guarda. -->
+        <div class="mapa-cuerpo">
+          <div id="mapaPlano" class="mapa-plano-contenedor">
+            <p class="skeleton">Cargando plano…</p>
+          </div>
+          <aside id="panelContenidoRack" class="panel-contenido" aria-labelledby="contenidoRackTitulo" hidden>
+            <div class="panel-contenido-cabecera">
+              <div>
+                <h3 id="contenidoRackTitulo" class="panel-contenido-titulo"></h3>
+                <p id="contenidoRackResumen" class="panel-contenido-resumen"></p>
+              </div>
+              <button type="button" id="btnCerrarContenidoRack" class="btn-cerrar" aria-label="Cerrar">&times;</button>
+            </div>
+            <div id="contenidoRackFrente" class="frente-rack"></div>
+            <p class="panel-contenido-ayuda">El ancho de cada casillero es proporcional al real. Clic en uno ocupado para ver sus tallas.</p>
+          </aside>
         </div>
       </section>
     </main>
@@ -458,6 +464,14 @@
         </label>
       </fieldset>
 
+      <!-- Sin casillero, ejecutar un movimiento cambiaba el stock pero no los
+           estantes (migración 20). -->
+      <div class="campo">
+        <label for="campoMovCasillero">Casillero</label>
+        <select id="campoMovCasillero"></select>
+        <p id="ayudaMovCasillero" class="campo-ayuda"></p>
+      </div>
+
       <div class="fila-2">
         <div class="campo">
           <label for="campoMovCantidad">Cantidad</label>
@@ -523,11 +537,8 @@
       <div id="modalUbicacionError" class="login-error" role="alert" tabindex="-1" hidden></div>
 
       <div class="campo" id="grupoUbicacionActual" hidden>
-        <label>Ubicación actual</label>
-        <div class="linea-ubicacion-actual">
-          <span id="ubicacionActualTexto"></span>
-          <button type="button" id="btnLiberarUbicacionActual" class="btn-accion">Liberar</button>
-        </div>
+        <label>Dónde está hoy</label>
+        <div id="listaUbicacionActual" class="lista-ubicacion-actual"></div>
       </div>
 
       <div class="campo">
@@ -536,7 +547,7 @@
       </div>
 
       <div class="campo">
-        <label for="campoUbicPosicion">Posición libre</label>
+        <label for="campoUbicPosicion">Casillero</label>
         <select id="campoUbicPosicion" required></select>
       </div>
 
@@ -562,7 +573,7 @@
 
       <div class="modal-acciones">
         <button type="button" id="btnCancelarUbicacion" class="btn-secundario">Cancelar</button>
-        <button type="submit" id="btnGuardarUbicacion" class="btn-primario">Asignar posición</button>
+        <button type="submit" id="btnGuardarUbicacion" class="btn-primario">Ubicar aquí</button>
       </div>
     </form>
   </div>
@@ -570,6 +581,20 @@
   <!-- ============================================================ -->
   <!-- MODAL: NUEVO RACK                                             -->
   <!-- ============================================================ -->
+  <!-- Un casillero con varias tallas del mismo modelo: hay que decir cuál se
+       libera, porque liberar el casillero entero dejaría sin ubicar tallas
+       que siguen físicamente ahí. -->
+  <div id="modalCasillero" class="modal-backdrop" hidden>
+    <div class="modal-tarjeta modal-tarjeta--chica" role="dialog" aria-modal="true" aria-labelledby="modalCasilleroTitulo">
+      <div class="modal-header">
+        <h3 id="modalCasilleroTitulo">Casillero</h3>
+        <button type="button" id="btnCerrarModalCasillero" class="btn-cerrar" aria-label="Cerrar">&times;</button>
+      </div>
+      <p class="modal-mensaje">Liberar saca la talla del casillero sin registrar una salida: sirve para corregir lo que ya no está, no para despachar.</p>
+      <div id="listaCasillero" class="lista-ubicacion-actual"></div>
+    </div>
+  </div>
+
   <div id="modalNuevoAlmacen" class="modal-backdrop" hidden>
     <form id="formNuevoAlmacen" class="modal-tarjeta modal-tarjeta--chica" novalidate>
       <div class="modal-header">
@@ -646,10 +671,6 @@
         <div class="campo">
           <label for="campoNuevoRackNiveles">Niveles (pisos)</label>
           <input id="campoNuevoRackNiveles" type="number" min="3" max="8" step="1" value="3" title="Entre 3 y 8: los dos niveles de abajo son para calzado infantil y hace falta al menos uno encima para el de adulto" />
-        </div>
-        <div class="campo">
-          <label for="campoNuevoRackPosiciones">Posiciones por nivel</label>
-          <input id="campoNuevoRackPosiciones" type="number" min="1" max="40" step="1" value="7" />
         </div>
       </div>
 

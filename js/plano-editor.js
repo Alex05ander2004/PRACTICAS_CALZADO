@@ -13,6 +13,7 @@ let modoEdicion = false;
 let racksModificados = new Map(); // rackId -> { gridX, gridY, gridAncho, gridAlto }
 let entradaModificada = new Map(); // almacenId -> { x, y }
 let rackSeleccionado = null;      // id del rack cuyo panel de propiedades está abierto
+let rackAbierto = null;           // rack cuyo frente se ve en el panel lateral (fuera del modo edición)
 
 function inicializarLayout(layout) {
   layoutAlmacenes = layout.almacenes;
@@ -230,11 +231,22 @@ function calcularRutaAEstrella(grilla, inicio, metas) {
 // =============================================================================
 
 function ocupacionDelRack(mapaFilas, almacenCode, rackCode) {
-  const posiciones = mapaFilas.filter((f) => f.almacen_code === almacenCode && f.rack === rackCode);
-  const libres = posiciones.filter((f) => f.estado_ocupacion === null).length;
-  const capacidad = posiciones.reduce((suma, f) => suma + (f.capacity_units ?? 0), 0);
-  const ocupado = posiciones.reduce((suma, f) => suma + (f.unidades ?? 0), 0);
-  return { total: posiciones.length, libres, capacidad, ocupado };
+  // Una fila por talla ubicada (migración 20): el casillero se cuenta una vez,
+  // con su capacidad una vez, y las cajas de todas sus tallas.
+  const porCasillero = new Map();
+  for (const f of mapaFilas) {
+    if (f.almacen_code !== almacenCode || f.rack !== rackCode) continue;
+    const c = porCasillero.get(f.position_id) ?? { capacidad: f.capacity_units ?? 0, ocupado: 0 };
+    c.ocupado += f.unidades ?? 0;
+    porCasillero.set(f.position_id, c);
+  }
+  const lista = [...porCasillero.values()];
+  return {
+    total: lista.length,
+    libres: lista.filter((c) => c.ocupado === 0).length,
+    capacidad: lista.reduce((suma, c) => suma + c.capacidad, 0),
+    ocupado: lista.reduce((suma, c) => suma + c.ocupado, 0),
+  };
 }
 
 // Cómo está repartido HOY un rack en pisos y casilleros. Los niveles salen de
@@ -244,7 +256,10 @@ function ocupacionDelRack(mapaFilas, almacenCode, rackCode) {
 function configuracionDeRack(rack, almacenCode) {
   const posiciones = todoElMapa.filter((f) => f.almacen_code === almacenCode && f.rack === rack.code);
   const porNivel = new Map();
+  const vistos = new Set(); // una fila por talla ubicada: el casillero se cuenta una vez
   for (const f of posiciones) {
+    if (vistos.has(f.position_id)) continue;
+    vistos.add(f.position_id);
     const nivel = f.level ?? 2;
     porNivel.set(nivel, (porNivel.get(nivel) ?? 0) + 1);
   }
@@ -294,6 +309,7 @@ function renderUnPlano(almacen, mapaFilas) {
     el.className = 'plano-rack' + (libres === 0 && total > 0 ? ' lleno' : '');
     if (racksModificados.has(rack.id)) el.classList.add('modificado');
     if (rackSeleccionado === rack.id) el.classList.add('seleccionado');
+    if (!modoEdicion && rackAbierto === rack.id) el.classList.add('abierto');
     el.dataset.rackId = rack.id;
     el.style.left = pct(g.gridX, almacen.grid_ancho);
     el.style.top = pct(g.gridY, almacen.grid_alto);
@@ -303,7 +319,7 @@ function renderUnPlano(almacen, mapaFilas) {
       `${rack.code} — ${g.gridAncho} × ${g.gridAlto} m, ${rack.niveles ?? 1} niveles\n` +
       `${libres} de ${total} posiciones libres\n` +
       `${formatearNumero(ocupado)} de ${formatearNumero(capacidad)} cajas` +
-      (modoEdicion ? '\n(arrastra para mover)' : '');
+      (modoEdicion ? '\n(arrastra para mover)' : '\n(clic para ver su contenido)');
     el.innerHTML = `<span class="plano-rack-etiqueta">${rack.code}</span>`;
     plano.appendChild(el);
   }
@@ -321,7 +337,14 @@ function renderUnPlano(almacen, mapaFilas) {
   plano.appendChild(entrada);
 
   bloque.appendChild(plano);
-  if (modoEdicion) habilitarArrastre(plano, almacen);
+  if (modoEdicion) {
+    habilitarArrastre(plano, almacen);
+  } else {
+    plano.addEventListener('click', (e) => {
+      const rackEl = e.target.closest('.plano-rack');
+      if (rackEl) abrirContenidoRack(rackEl.dataset.rackId);
+    });
+  }
   return bloque;
 }
 
@@ -469,6 +492,9 @@ function actualizarBarraEdicion() {
 }
 
 document.getElementById('btnModoEdicion').addEventListener('click', () => {
+  // Editar y mirar el contenido son modos distintos: el clic en un rack
+  // selecciona para mover en uno y abre el frente en el otro.
+  if (rackAbierto) cerrarContenidoRack();
   modoEdicion = !modoEdicion;
   document.getElementById('btnModoEdicion').textContent = modoEdicion ? 'Salir del editor' : 'Editar plano';
   document.getElementById('btnModoEdicion').setAttribute('aria-pressed', String(modoEdicion));
@@ -708,7 +734,6 @@ function seleccionarRack(rackId) {
   document.getElementById('campoRackAncho').value = g.gridAncho;
   document.getElementById('campoRackAlto').value = g.gridAlto;
   document.getElementById('campoRackNiveles').value = config.niveles;
-  document.getElementById('campoRackSlots').value = config.slots;
   document.getElementById('panelRack').hidden = false;
   refrescarCapacidadPanel();
   repintar();
@@ -732,26 +757,25 @@ async function refrescarCapacidadPanel() {
   const g = geometriaDe(rack);
   const { total, capacidad } = ocupacionDelRack(todoElMapa, almacen.code, rack.code);
   const niveles = parseInt(document.getElementById('campoRackNiveles').value, 10) || 1;
-  const slots = parseInt(document.getElementById('campoRackSlots').value, 10) || 1;
 
-  nota.textContent = `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas. Calculando…`;
+  const hoy = `Hoy: ${total} casilleros, ${formatearNumero(capacidad)} cajas.`;
+  nota.textContent = `${hoy} Calculando…`;
   try {
+    // Sin cantidad de casilleros: la base propone, nivel por nivel, la que deja
+    // cada uno del tamaño de un modelo (migración 21).
     const est = await InventarioAPI.estimarCapacidadRack({
-      gridAncho: g.gridAncho, gridAlto: g.gridAlto, niveles, slotsPorNivel: slots,
+      gridAncho: g.gridAncho, gridAlto: g.gridAlto, niveles, slotsPorNivel: null,
     });
     const detalle = (est.por_nivel ?? [])
-      .map((n) => `n${n.nivel}: ${formatearNumero(n.cajas)}`)
+      .map((n) => `n${n.nivel}: ${n.casilleros} de ${n.ancho_cm} cm`)
       .join(' · ');
-    nota.textContent =
-      `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas. ` +
-      `Con ${niveles} niveles × ${slots}: ${est.posiciones} posiciones, ${formatearNumero(est.cajas)} cajas (${detalle}).`;
+    nota.textContent = `${hoy} A medida de un modelo: ${est.posiciones} casilleros, ${formatearNumero(est.cajas)} cajas (${detalle}).`;
   } catch (err) {
-    nota.textContent = `Hoy: ${total} posiciones, ${formatearNumero(capacidad)} cajas.`;
+    nota.textContent = hoy;
   }
 }
 
 document.getElementById('campoRackNiveles').addEventListener('change', refrescarCapacidadPanel);
-document.getElementById('campoRackSlots').addEventListener('change', refrescarCapacidadPanel);
 
 document.getElementById('btnAplicarNivelesRack').addEventListener('click', async () => {
   const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
@@ -763,7 +787,7 @@ document.getElementById('btnAplicarNivelesRack').addEventListener('click', async
   try {
     const resultado = await InventarioAPI.configurarRack(rack.id, {
       niveles: parseInt(document.getElementById('campoRackNiveles').value, 10),
-      slotsPorNivel: parseInt(document.getElementById('campoRackSlots').value, 10),
+      slotsPorNivel: null, // a medida de un modelo (migración 21)
     });
     mostrarToast(resultado.mensaje ?? 'Rack reconfigurado.', 'ok');
     await recargarLayout();
@@ -773,7 +797,7 @@ document.getElementById('btnAplicarNivelesRack').addEventListener('click', async
     mostrarToast(err.message ?? 'No se pudo reconfigurar el rack.', 'bad');
   } finally {
     boton.disabled = false;
-    boton.textContent = 'Aplicar niveles';
+    boton.textContent = 'Aplicar niveles y casilleros';
   }
 });
 
@@ -890,6 +914,22 @@ document.getElementById('btnAplicarTamanoAlmacen').addEventListener('click', asy
 
 // Cambiar el tamaño puede sacar el rack del plano; se recorta antes de
 // tocarlo para que el editor no proponga algo que la base va a rechazar.
+// Espejo de la regla de fn_validar_geometria_rack (migración 20): una
+// estantería tiene 1 m de fondo (una cara) o 2 m (dos espalda con espalda), y
+// su frente mide al menos el doble. Se revisa acá para no proponer en el
+// editor un rack que la base va a rechazar al guardar.
+function problemaDeForma(ancho, alto) {
+  const fondo = Math.min(ancho, alto);
+  const frente = Math.max(ancho, alto);
+  if (fondo > 2) {
+    return `Un rack de ${ancho} × ${alto} m tendría ${fondo} m de fondo: una estantería tiene 1 m (una cara) o 2 m (dos espalda con espalda), lo que se alcanza desde el pasillo.`;
+  }
+  if (frente < 2 * fondo) {
+    return `Un rack de ${ancho} × ${alto} m no es una estantería: el frente tiene que medir al menos el doble que el fondo.`;
+  }
+  return null;
+}
+
 function redimensionarSeleccionado(nuevoAncho, nuevoAlto) {
   const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
   if (!rack) return;
@@ -898,6 +938,14 @@ function redimensionarSeleccionado(nuevoAncho, nuevoAlto) {
 
   const ancho = Math.max(1, Math.min(nuevoAncho, almacen.grid_ancho - g.gridX));
   const alto = Math.max(1, Math.min(nuevoAlto, almacen.grid_alto - g.gridY));
+
+  const problema = problemaDeForma(ancho, alto);
+  if (problema) {
+    mostrarToast(problema, 'bad');
+    document.getElementById('campoRackAncho').value = g.gridAncho;
+    document.getElementById('campoRackAlto').value = g.gridAlto;
+    return;
+  }
 
   racksModificados.set(rack.id, { ...g, gridAncho: ancho, gridAlto: alto });
   document.getElementById('campoRackAncho').value = ancho;
@@ -993,7 +1041,6 @@ document.getElementById('btnNuevoRack').addEventListener('click', () => {
   document.getElementById('campoNuevoRackAncho').value = 14;
   document.getElementById('campoNuevoRackAlto').value = 2;
   document.getElementById('campoNuevoRackNiveles').value = 3;
-  document.getElementById('campoNuevoRackPosiciones').value = 7;
   refrescarEstimacionNuevoRack();
   mostrarModal('modalNuevoRack');
 });
@@ -1004,24 +1051,24 @@ async function refrescarEstimacionNuevoRack() {
   const salida = document.getElementById('estimacionNuevoRack');
   const leer = (id) => parseInt(document.getElementById(id).value, 10) || 1;
 
-  salida.textContent = 'Calculando capacidad…';
+  salida.textContent = 'Calculando casilleros…';
   try {
     const est = await InventarioAPI.estimarCapacidadRack({
       gridAncho: leer('campoNuevoRackAncho'),
       gridAlto: leer('campoNuevoRackAlto'),
       niveles: leer('campoNuevoRackNiveles'),
-      slotsPorNivel: leer('campoNuevoRackPosiciones'),
+      slotsPorNivel: null,
     });
     const detalle = (est.por_nivel ?? [])
-      .map((n) => `nivel ${n.nivel}: ${formatearNumero(n.cajas)}`)
+      .map((n) => `nivel ${n.nivel}: ${n.casilleros} de ${n.ancho_cm} cm (${formatearNumero(n.cajas_por_casillero)} c/u)`)
       .join(' · ');
-    salida.textContent = `${est.posiciones} posiciones · ${formatearNumero(est.cajas)} cajas — ${detalle}`;
+    salida.textContent = `${est.posiciones} casilleros · ${formatearNumero(est.cajas)} cajas — ${detalle}`;
   } catch (err) {
     salida.textContent = '';
   }
 }
 
-['campoNuevoRackAncho', 'campoNuevoRackAlto', 'campoNuevoRackNiveles', 'campoNuevoRackPosiciones']
+['campoNuevoRackAncho', 'campoNuevoRackAlto', 'campoNuevoRackNiveles']
   .forEach((id) => document.getElementById(id).addEventListener('change', refrescarEstimacionNuevoRack));
 
 const cerrarModalRack = () => ocultarModal('modalNuevoRack');
@@ -1048,6 +1095,8 @@ document.getElementById('formNuevoRack').addEventListener('submit', async (event
 
     const ancho = parseInt(document.getElementById('campoNuevoRackAncho').value, 10);
     const alto = parseInt(document.getElementById('campoNuevoRackAlto').value, 10);
+    const formaInvalida = problemaDeForma(ancho, alto);
+    if (formaInvalida) throw new Error(formaInvalida);
     const hueco = primerHuecoLibre(almacen, ancho, alto);
     if (!hueco) throw new Error(`No queda espacio en el plano para un rack de ${ancho} × ${alto} m.`);
 
@@ -1059,7 +1108,7 @@ document.getElementById('formNuevoRack').addEventListener('submit', async (event
       gridAncho: ancho,
       gridAlto: alto,
       niveles: parseInt(document.getElementById('campoNuevoRackNiveles').value, 10),
-      slotsPorNivel: parseInt(document.getElementById('campoNuevoRackPosiciones').value, 10),
+      slotsPorNivel: null, // a medida de un modelo (migración 21)
     });
 
     cerrarModalRack();
@@ -1259,4 +1308,154 @@ document.getElementById('btnEliminarAlmacen').addEventListener('click', () => {
   }, { once: true });
 
   mostrarModal('modalConfirmar');
+});
+
+// =============================================================================
+//  CONTENIDO DE UN RACK: EL FRENTE DE LA ESTANTERÍA
+// =============================================================================
+// El plano es la planta —la vista desde arriba—; esto es el alzado: el rack
+// visto de frente, con los niveles apilados como en la realidad (el 1 abajo)
+// y cada casillero con su ancho proporcional al real, de modo que uno de 15 cm
+// de lo infantil se ve angosto al lado de uno de 78 cm de adulto.
+const CELDA_MIN_PX = 38;
+
+function abrirContenidoRack(rackId) {
+  rackAbierto = rackId;
+  renderContenidoRack();
+  repintar();
+}
+
+function cerrarContenidoRack() {
+  rackAbierto = null;
+  document.getElementById('panelContenidoRack').hidden = true;
+  document.querySelector('.mapa-cuerpo')?.classList.remove('con-panel');
+  repintar();
+}
+
+// Cambiaron los datos (se ubicó, se liberó, se cambió de almacén): el panel
+// abierto se redibuja, o se cierra si su rack ya no está a la vista.
+function refrescarContenidoRack() {
+  if (!rackAbierto) return;
+  const rack = layoutRacks.find((r) => r.id === rackAbierto);
+  const almacen = rack && layoutAlmacenes.find((a) => a.id === rack.warehouse_id);
+  const filtro = document.getElementById('filtroMapaAlmacen').value;
+  if (!rack || modoEdicion || (filtro && almacen?.code !== filtro)) {
+    cerrarContenidoRack();
+    return;
+  }
+  renderContenidoRack();
+}
+
+function renderContenidoRack() {
+  const rack = layoutRacks.find((r) => r.id === rackAbierto);
+  if (!rack) return;
+  const almacen = layoutAlmacenes.find((a) => a.id === rack.warehouse_id);
+  const filas = todoElMapa.filter((f) => f.almacen_code === almacen.code && f.rack === rack.code);
+  const todos = casilleros(filas);
+  const hay = todos.reduce((suma, c) => suma + cajasEn(c), 0);
+  const caben = todos.reduce((suma, c) => suma + (c.capacity_units ?? 0), 0);
+  const modelos = new Set(filas.filter((f) => f.product_id).map((f) => f.product_id)).size;
+
+  document.getElementById('contenidoRackTitulo').textContent = `${almacen.code} · ${rack.code}`;
+  document.getElementById('contenidoRackResumen').textContent =
+    `${rack.grid_ancho} × ${rack.grid_alto} m · ${rack.niveles} niveles · ${todos.length} casilleros · ` +
+    `${formatearNumero(hay)} de ${formatearNumero(caben)} cajas · ${modelos} modelo${modelos === 1 ? '' : 's'}`;
+
+  document.getElementById('panelContenidoRack').hidden = false;
+  document.querySelector('.mapa-cuerpo')?.classList.add('con-panel');
+
+  const porNivel = new Map();
+  for (const c of todos) {
+    if (!porNivel.has(c.level)) porNivel.set(c.level, []);
+    porNivel.get(c.level).push(c);
+  }
+
+  // Una sola escala para el rack entero: la que deja el casillero más angosto
+  // en al menos CELDA_MIN_PX. Así todos los niveles miden lo mismo —como la
+  // estantería real— y un nivel con muchos casilleros no se ve más largo.
+  const cont = document.getElementById('contenidoRackFrente');
+  const masCasilleros = Math.max(1, ...[...porNivel.values()].map((lista) => lista.length));
+  const disponible = Math.max(200, cont.clientWidth - 70);
+  const anchoFila = Math.max(disponible, CELDA_MIN_PX * masCasilleros);
+
+  cont.innerHTML = '';
+  const niveles = document.createElement('div');
+  niveles.className = 'frente-niveles';
+  niveles.style.width = `${Math.round(anchoFila) + 46}px`;
+
+  for (let nivel = rack.niveles; nivel >= 1; nivel--) {
+    const lista = (porNivel.get(nivel) ?? [])
+      .sort((a, b) => a.posicion.localeCompare(b.posicion, undefined, { numeric: true }));
+
+    const fila = document.createElement('div');
+    fila.className = 'frente-nivel' + (esNivelInfantil(nivel) ? ' infantil' : '');
+
+    const etiqueta = document.createElement('div');
+    etiqueta.className = 'frente-nivel-etiqueta';
+    const numero = document.createElement('span');
+    numero.textContent = `n${nivel}`;
+    const publico = document.createElement('span');
+    publico.textContent = esNivelInfantil(nivel) ? 'niño' : 'adulto';
+    etiqueta.append(numero, publico);
+
+    const celdas = document.createElement('div');
+    celdas.className = 'frente-celdas';
+    if (lista.length === 0) {
+      const vacio = document.createElement('span');
+      vacio.className = 'frente-vacio';
+      vacio.textContent = 'Sin casilleros en este nivel';
+      celdas.appendChild(vacio);
+    } else {
+      const ancho = anchoFila / lista.length - 2;
+      for (const c of lista) celdas.appendChild(celdaFrente(c, ancho));
+    }
+
+    fila.append(etiqueta, celdas);
+    niveles.appendChild(fila);
+  }
+  cont.appendChild(niveles);
+}
+
+function celdaFrente(c, anchoPx) {
+  const hay = cajasEn(c);
+  const caben = c.capacity_units ?? 0;
+  const celda = document.createElement('button');
+  celda.type = 'button';
+  celda.className = 'frente-celda';
+  celda.style.width = `${Math.max(8, Math.floor(anchoPx))}px`;
+  if (c.tallas.length) celda.classList.add(c.tallas[0].estado_ocupacion.toLowerCase());
+  if (hay > caben) celda.classList.add('sobrecargado');
+
+  const modelo = document.createElement('span');
+  modelo.className = 'frente-celda-modelo';
+  modelo.textContent = c.tallas.length ? (c.tallas[0].model_code ?? c.tallas[0].sku) : '';
+  const tallas = document.createElement('span');
+  tallas.className = 'frente-celda-tallas';
+  tallas.textContent = c.tallas.map((t) => t.talla).filter(Boolean).join(' ');
+  const barra = document.createElement('span');
+  barra.className = 'frente-barra';
+  const relleno = document.createElement('span');
+  relleno.style.width = `${caben ? Math.min(100, (hay / caben) * 100) : (hay ? 100 : 0)}%`;
+  barra.appendChild(relleno);
+  celda.append(modelo, tallas, barra);
+
+  const detalle = c.tallas.length
+    ? `${c.tallas[0].producto}: ${c.tallas.map((t) => `talla ${t.talla ?? '?'} (${t.unidades})`).join(', ')}`
+    : 'Libre';
+  celda.title = `${c.posicion} — ${detalle} — ${hay} de ${caben} cajas`;
+  celda.setAttribute('aria-label', celda.title);
+  if (c.tallas.length) {
+    celda.addEventListener('click', () => abrirCasillero(c));
+  } else {
+    celda.disabled = true;
+  }
+  return celda;
+}
+
+document.getElementById('btnCerrarContenidoRack').addEventListener('click', cerrarContenidoRack);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !rackAbierto) return;
+  // Con un modal abierto encima, Escape es para el modal.
+  if (document.querySelector('.modal-backdrop:not([hidden])')) return;
+  cerrarContenidoRack();
 });

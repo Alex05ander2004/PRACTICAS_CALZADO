@@ -253,6 +253,66 @@ const InventarioAPI = {
     return data;
   },
 
+  // Ubicar cajas en un casillero. Si ya guarda esta misma talla se suma a esa
+  // fila; si guarda otro modelo, no queda sitio, o no hay tantos pares sin
+  // ubicar en el almacén, la base lo rechaza con el motivo.
+  async ubicarEnCasillero({ positionId, itemId, quantity, status = 'OCUPADA', notes = null }) {
+    const { data, error } = await supabaseClient.rpc('ubicar_en_casillero', {
+      p_position_id: positionId,
+      p_item_id: itemId,
+      p_quantity: quantity,
+      p_status: status,
+      p_notes: notes,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // Todo lo que está fuera de lugar, por tipo (migración 21).
+  async listarRevision() {
+    const { data, error } = await supabaseClient
+      .from('v_revision_ubicaciones')
+      .select('*')
+      .order('tipo')
+      .order('almacen_code');
+    if (error) throw error;
+    return data;
+  },
+
+  // Saca el sobrante de un casillero y lo reparte donde haya sitio para ese modelo.
+  async repartirSobrecarga(positionId) {
+    const { data, error } = await supabaseClient.rpc('repartir_sobrecarga', { p_position_id: positionId });
+    if (error) throw error;
+    return data;
+  },
+
+  // Ubica lo que quedó en recepción, juntando las tallas de cada modelo.
+  async ubicarRecepcion(inventoryId) {
+    const { data, error } = await supabaseClient.rpc('ubicar_recepcion', { p_inventory_id: inventoryId });
+    if (error) throw error;
+    return data;
+  },
+
+  // confiar: 'STOCK' libera lo que sobra en los estantes; 'ESTANTES' crea un
+  // ajuste pendiente de aprobación por la diferencia.
+  async resolverFantasma(itemId, warehouseId, confiar) {
+    const { data, error } = await supabaseClient.rpc('resolver_fantasma', {
+      p_item_id: itemId,
+      p_warehouse_id: warehouseId,
+      p_confiar: confiar,
+    });
+    if (error) throw error;
+    return data;
+  },
+
+  // "Arreglar todos" de un tipo. Devuelve { resueltos, fallidos, detalle }: los
+  // que no se pudieron vienen con su motivo, no se pierden.
+  async resolverRevision(tipo) {
+    const { data, error } = await supabaseClient.rpc('resolver_revision', { p_tipo: tipo });
+    if (error) throw error;
+    return data;
+  },
+
   async liberarPosicion(assignmentId) {
     const { data, error } = await supabaseClient
       .from('position_assignments')

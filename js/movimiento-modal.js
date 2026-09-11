@@ -18,6 +18,7 @@ function abrirModalMovimiento() {
     select.appendChild(opt);
   }
 
+  poblarCasillerosMovimiento();
   mostrarModal('modalMovimiento');
 }
 
@@ -38,8 +39,52 @@ document.querySelectorAll('input[name="movTipo"]').forEach((radio) => {
   radio.addEventListener('change', () => {
     const tipo = document.querySelector('input[name="movTipo"]:checked').value;
     document.getElementById('grupoMovDireccion').hidden = tipo !== 'AJUSTE';
+    poblarCasillerosMovimiento();
   });
 });
+
+document.getElementById('campoMovArticulo').addEventListener('change', poblarCasillerosMovimiento);
+
+// El casillero dice de qué estante sale una SALIDA o a cuál entra una ENTRADA.
+// Sin él, ejecutar un movimiento cambiaba el stock pero no los estantes, y el
+// mapa terminaba mostrando cajas que ya se habían ido (migración 20).
+function poblarCasillerosMovimiento() {
+  const select = document.getElementById('campoMovCasillero');
+  const ayuda = document.getElementById('ayudaMovCasillero');
+  select.innerHTML = '';
+  ayuda.textContent = '';
+
+  const articulo = todosLosArticulos.find((a) => a.id === document.getElementById('campoMovArticulo').value);
+  if (!articulo) return;
+
+  const tipo = document.querySelector('input[name="movTipo"]:checked')?.value ?? 'ENTRADA';
+  const inv = articulo.inventory?.[0];
+  const almacenCode = layoutAlmacenes.find((a) => a.id === inv?.warehouse_id)?.code;
+  // Lo RESERVADA es sitio apartado para algo que no llegó: no son cajas que se
+  // puedan sacar.
+  const donde = todoElMapa.filter((f) => f.item_id === articulo.id && f.assignment_id && f.estado_ocupacion !== 'RESERVADA');
+  const enEstantes = donde.reduce((suma, f) => suma + (f.unidades ?? 0), 0);
+  const sinUbicar = Math.max(0, (inv?.quantity ?? 0) - enEstantes);
+
+  if (tipo === 'ENTRADA') {
+    select.add(new Option('Recepción — ubicar después', ''));
+    for (const c of casillerosDisponiblesPara(almacenCode, articulo)) {
+      select.add(new Option(`${c.rack} · ${c.posicion} (nivel ${c.level}) — caben ${c.libre} más`, c.position_id));
+    }
+    ayuda.textContent = 'Con un casillero elegido, al ejecutar la entrada las cajas quedan ubicadas ahí.';
+    return;
+  }
+
+  for (const f of donde) {
+    select.add(new Option(`${f.rack} · ${f.posicion} — hay ${f.unidades}`, f.position_id));
+  }
+  if (sinUbicar > 0 || donde.length === 0) {
+    select.add(new Option(`Recepción, sin ubicar — hay ${sinUbicar}`, ''));
+  }
+  ayuda.textContent = tipo === 'SALIDA'
+    ? 'Al ejecutar la salida, las cajas se descuentan de este casillero.'
+    : 'Un ajuste con casillero corrige también lo que hay en ese estante.';
+}
 
 document.getElementById('formMovimiento').addEventListener('submit', async (evento) => {
   evento.preventDefault();
@@ -67,6 +112,7 @@ document.getElementById('formMovimiento').addEventListener('submit', async (even
     await MovimientosAPI.crear({
       itemId,
       inventoryId,
+      positionId: document.getElementById('campoMovCasillero').value || null,
       movementType: tipo,
       quantity: cantidad,
       direction,

@@ -1177,3 +1177,135 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
   line-height: 1.5;
   flex: 1 1 340px;
 }
+
+/* Casillero con más cajas de las que caben. Antes la capacidad se inflaba para
+   ocultarlo (migración 20); ahora se marca para que alguien lo descargue. */
+.mapa-tile.sobrecargado {
+  outline: 2px dashed var(--bad, #d9534f);
+  outline-offset: -2px;
+}
+
+.campo-ayuda {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Varias líneas "ubicación + Liberar": un artículo repartido en casilleros, o
+   las tallas de un mismo casillero. */
+.lista-ubicacion-actual {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ============================================================================
+   PLANTA Y ALZADO (migración 21): el plano aéreo y, al lado, el frente del
+   rack elegido con sus niveles apilados como la estantería real.
+   ========================================================================= */
+.mapa-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.mapa-cuerpo.con-panel { grid-template-columns: minmax(0, 1fr) minmax(320px, 480px); }
+@media (max-width: 960px) {
+  .mapa-cuerpo.con-panel { grid-template-columns: minmax(0, 1fr); }
+}
+
+.plano-piso:not(.editando) .plano-rack { cursor: pointer; }
+.plano-rack.abierto { outline: 3px solid var(--accent); outline-offset: 2px; z-index: 2; }
+
+.panel-contenido {
+  position: sticky;
+  top: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+.panel-contenido-cabecera { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.panel-contenido-titulo { font-family: "Big Shoulders Display", sans-serif; font-size: 20px; margin: 0; }
+.panel-contenido-resumen { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.panel-contenido-ayuda { margin: 0; font-size: 11.5px; color: var(--muted); }
+
+/* El frente se desplaza entero si no entra: todos los niveles miden lo mismo,
+   como la estantería real, y se mueven juntos. */
+.frente-rack {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 8px;
+}
+.frente-niveles { display: flex; flex-direction: column; gap: 6px; }
+.frente-nivel { display: grid; grid-template-columns: 40px 1fr; gap: 6px; align-items: stretch; }
+.frente-nivel-etiqueta {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font: 500 11px "IBM Plex Mono", monospace;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.frente-nivel.infantil .frente-nivel-etiqueta { color: var(--accent); }
+.frente-celdas { display: flex; gap: 2px; }
+.frente-vacio { font-size: 11.5px; color: var(--muted); align-self: center; }
+
+.frente-celda {
+  flex: 0 0 auto;
+  height: 60px;
+  padding: 4px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  font: 10px "IBM Plex Mono", monospace;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.frente-celda:disabled { cursor: default; }
+.frente-celda.ocupada    { border: 1px solid var(--ok);     background: var(--ok-weak); }
+.frente-celda.reservada  { border: 1px solid var(--warn);   background: var(--warn-weak); }
+.frente-celda.en_picking { border: 1px solid var(--accent); background: var(--accent-weak); }
+.frente-celda.sobrecargado { border: 2px dashed var(--bad); background: var(--bad-weak); }
+.frente-celda:not(:disabled):hover { filter: brightness(0.97); }
+.frente-celda:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.frente-celda-modelo { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frente-celda-tallas { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frente-barra { display: block; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.frente-barra > span { display: block; height: 100%; background: var(--ok); }
+.frente-celda.sobrecargado .frente-barra > span { background: var(--bad); }
+
+.mapa-swatch.sobrecargado { background: var(--bad-weak); border: 2px dashed var(--bad); }
+
+/* Resumen del almacén: una fila de datos cortos antes del plano. */
+.resumen-almacen { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.resumen-dato {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.resumen-dato strong { font-family: "IBM Plex Mono", monospace; font-weight: 500; color: inherit; }
+.resumen-dato.alerta { border-color: var(--warn); background: var(--warn-weak); }
+
+/* Revisión de ubicaciones: un bloque por tipo de problema. */
+.revision-grupos { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
+.revision-grupo-cabecera { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.revision-grupo-titulo { margin: 0; font-size: 13px; font-weight: 600; }
+.revision-grupo-ayuda { margin: 2px 0 8px; font-size: 11.5px; color: var(--muted); max-width: 70ch; }
+.revision-acciones { display: inline-flex; gap: 6px; flex-wrap: wrap; }
