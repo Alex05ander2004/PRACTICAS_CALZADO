@@ -1,39 +1,60 @@
 -- =============================================================================
---  WMS CALZADO DEPORTIVO — ESQUEMA COMPLETO (archivo consolidado)
+--  WMS CALZADO — ESQUEMA COMPLETO (archivo consolidado)
 --
---  Unión de las migraciones del proyecto, en orden:
---     01_schema_base.sql            -> modelo de datos
---     02_mejoras_operativas.sql     -> control operativo y error humano
---     03_rls.sql                    -> seguridad: RLS, API pública, permisos
---     04_publico_por_edad.sql       -> calzado infantil en nivel 1, adulto en 2+
---     05_umbrales_inventario.sql    -> editar min_stock/max_stock por columna
---     06_crear_registro_inventario.sql -> crear el primer registro de stock
---     07_mapa_almacen_completo.sql  -> IDs de posicion/asignacion en el mapa
---     08_rutas_almacen.sql          -> (superada por la 09) grafo declarado a mano
---     09_layout_editor.sql          -> plano editable por geometria + rutas con A*
---     10_crud_racks.sql             -> crear/eliminar racks desde el editor
---     11_capacidad_y_tamano.sql     -> tamano del almacen y capacidad en cajas
---     12_entrada_en_la_pared.sql    -> la entrada solo existe sobre una pared
---     13_crud_almacenes.sql         -> crear/eliminar almacenes
---     14_prefijo_de_posicion_alfanumerico.sql -> prefijo de posicion con digitos
---     15_cajas_reales_y_niveles.sql -> cajas reales, infantil en 2 niveles, minimo 3 por rack
---     16_ubicacion_en_movimientos.sql -> la vista de movimientos expone rack y posicion
---     17_reubicar_por_nivel.sql     -> lista de reubicaciones pendientes y mover atomico
---     18_reubicar_repartiendo.sql   -> reubicar repartiendo en varios casilleros
---     19_girar_la_caja.sql          -> probar las dos orientaciones de la caja
---     20_casilleros_por_modelo.sql  -> casillero por modelo, estantes al dia con el stock
---     21_casilleros_a_medida_y_revision.sql -> casilleros automaticos y revision de ubicaciones
---     22_estimacion_explicada.sql   -> la estimacion dice que caja y objetivo uso cada nivel
---     23_aplicar_casilleros_a_todo.sql -> casilleros a medida en todos los racks
+--  Todas las migraciones del proyecto, concatenadas en orden. Sirve para
+--  levantar la base de una sola pasada en un proyecto nuevo de Supabase, en
+--  vez de abrir 33 archivos.
 --
---  Se puede pegar completo en el SQL Editor de Supabase y ejecutar de una sola
---  vez sobre una base vacía. Es idempotente. Requiere PostgreSQL 15+.
+--  No existe la 25: era un rediseno descartado (ver README).
 --
---  Documentación: supabase/DISENO.md · docs/ANALISIS-OPERATIVO.md
---  Verificación:  tests/01_smoke_test.sql · tests/02_rls_test.sql
---  Datos de demo: seed/seed.sql · seed/02_seed_ampliacion.sql · seed/03_seed_infantil.sql
+--  IMPORTANTE. Cuatro de estas migraciones no crean estructura sino que
+--  TRANSFORMAN DATOS: la 23 (casilleros a medida), la 28 (medidas de caja) y
+--  la 30 y la 31 (sanear movimientos). Aqui no encuentran nada porque la base
+--  esta vacia, asi que hay que volver a pasarlas DESPUES de cargar los datos.
+--  Eso es exactamente lo que hace supabase/seed/04_ajustes_post_seed.sql.
+--
+--  Orden completo de instalacion en INSTALACION.md.
+--
+--  Contenido:
+--     01_schema_base.sql                             -> wms calzado deportivo — esquema de base de datos (postgresql / supabas
+--     02_mejoras_operativas.sql                      -> control operativo y error humano
+--     03_rls.sql                                     -> seguridad: rls, api pública y permisos
+--     04_publico_por_edad.sql                        -> calzado infantil en niveles inferiores, adulto en superiores
+--     05_umbrales_inventario.sql                     -> permitir editar min_stock / max_stock sin abrir quantity
+--     06_crear_registro_inventario.sql               -> crear el primer registro de inventario de un artículo
+--     07_mapa_almacen_completo.sql                   -> v_mapa_almacen: exponer los ids que la ui necesita
+--     08_rutas_almacen.sql                           -> grafo del almacén: coordenadas reales y ruta más corta
+--     09_layout_editor.sql                           -> el almacén como geometría: grilla, racks con forma y a*
+--     10_crud_racks.sql                              -> crear y eliminar racks desde el editor de plano
+--     11_capacidad_y_tamano.sql                      -> el plano realista: tamaño del almacén y capacidad en cajas
+--     12_entrada_en_la_pared.sql                     -> la entrada vive en una pared
+--     13_crud_almacenes.sql                          -> crear y eliminar almacenes
+--     14_prefijo_de_posicion_alfanumerico.sql        -> el prefijo de una posición también puede ser un dígito
+--     15_cajas_reales_y_niveles.sql                  -> medidas reales de caja, infantil en dos niveles,
+--     16_ubicacion_en_movimientos.sql                -> los movimientos dicen dónde ocurrieron
+--     17_reubicar_por_nivel.sql                      -> reubicar lo que quedó en el nivel equivocado
+--     18_reubicar_repartiendo.sql                    -> reubicar repartiendo, y sin pelearse con el índice único
+--     19_girar_la_caja.sql                           -> la caja se puede girar
+--     20_casilleros_por_modelo.sql                   -> casilleros por modelo, estantes sincronizados con el stock
+--     21_casilleros_a_medida_y_revision.sql          -> casilleros a medida de un modelo y revisión de ubicaciones
+--     22_estimacion_explicada.sql                    -> la estimación dice cómo llegó a su número
+--     23_aplicar_casilleros_a_todo.sql               -> todos los racks con casilleros a medida
+--     24_codigos_con_formato.sql                     -> códigos con formato y duplicados con mensaje
+--     26_alta_de_articulo_atomica.sql                -> que dar de alta un artículo no deje la mitad hecha
+--     27_publico_y_proveedor_por_talla.sql           -> el público y el proveedor pasan a ser de cada talla
+--     28_medidas_de_caja_en_los_articulos.sql        -> las medidas de la caja, en los artículos que ya existían
+--     29_el_casillero_sigue_al_movimiento.sql        -> el casillero sigue el ciclo del movimiento
+--     30_sanear_movimientos_pendientes.sql           -> los movimientos pendientes que apuntan a donde no deben
+--     31_sanear_movimientos_aprobados.sql            -> lo mismo, para los movimientos ya aprobados
+--     32_retirar_el_movimiento_propio.sql            -> retirar un movimiento propio
+--     33_stock_sin_los_borrados.sql                  -> v_stock_actual deja fuera lo que está en la papelera
+--     34_el_estado_lo_ponen_los_movimientos.sql      -> ubicar a mano ya no elige el estado
 -- =============================================================================
 
+
+-- #############################################################################
+-- ##  01_schema_base.sql
+-- #############################################################################
 
 -- =============================================================================
 --  WMS CALZADO DEPORTIVO — ESQUEMA DE BASE DE DATOS (PostgreSQL / Supabase)
@@ -761,6 +782,10 @@ $$;
 -- TODO Fase 3: carga (seed) del data.csv ya normalizado y datos de demo.
 -- =============================================================================
 
+
+-- #############################################################################
+-- ##  02_mejoras_operativas.sql
+-- #############################################################################
 
 -- =============================================================================
 --  MIGRACIÓN 02 — CONTROL OPERATIVO Y ERROR HUMANO
@@ -2068,6 +2093,10 @@ left join public.profiles  eb on eb.id = m.executed_by;
 -- =============================================================================
 
 
+-- #############################################################################
+-- ##  03_rls.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 03 — SEGURIDAD: RLS, API PÚBLICA Y PERMISOS
 --
@@ -2962,6 +2991,10 @@ $$;
 -- =============================================================================
 
 
+-- #############################################################################
+-- ##  04_publico_por_edad.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 04 — CALZADO INFANTIL EN NIVELES INFERIORES, ADULTO EN SUPERIORES
 --
@@ -3070,6 +3103,10 @@ comment on trigger trg_assign_publico_nivel on public.position_assignments is
   'Regla del jefe de almacén: infantil abajo (nivel 1), adulto arriba (nivel 2+). Se aplica en la base, no confía en que la UI la respete.';
 
 
+-- #############################################################################
+-- ##  05_umbrales_inventario.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 05 — PERMITIR EDITAR min_stock / max_stock SIN ABRIR quantity
 --
@@ -3101,6 +3138,10 @@ create policy p_inventory_update_umbrales on public.inventory
 comment on policy p_inventory_update_umbrales on public.inventory is
   'Solo min_stock/max_stock son editables por columna (ver el GRANT de arriba). quantity/qty_reserved/qty_incoming siguen sin ningún grant de UPDATE: ni esta política los alcanza.';
 
+
+-- #############################################################################
+-- ##  06_crear_registro_inventario.sql
+-- #############################################################################
 
 -- =============================================================================
 --  MIGRACIÓN 06 — CREAR EL PRIMER REGISTRO DE INVENTARIO DE UN ARTÍCULO
@@ -3175,6 +3216,10 @@ comment on function public.crear_registro_inventario is
   'Único camino para que exista una fila de inventory: SUPERVISOR+ , dispara un asiento en stock_ledger si arranca con cantidad > 0.';
 
 
+-- #############################################################################
+-- ##  07_mapa_almacen_completo.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 07 — v_mapa_almacen: exponer los IDs que la UI necesita
 --
@@ -3231,6 +3276,10 @@ alter view public.v_mapa_almacen set (security_invoker = on);
 comment on view public.v_mapa_almacen is
   'Mapa completo del almacén: todas las posiciones, libres y ocupadas, con los IDs necesarios para actuar (asignar/liberar), no solo para mostrar.';
 
+
+-- #############################################################################
+-- ##  08_rutas_almacen.sql
+-- #############################################################################
 
 -- =============================================================================
 --  MIGRACIÓN 08 — GRAFO DEL ALMACÉN: COORDENADAS REALES Y RUTA MÁS CORTA
@@ -3420,6 +3469,10 @@ order by w.code;
 -- Esperado: ALM-A 7 nodos/10 aristas, BOD-B 5 nodos/4 aristas, BOD-C 4 nodos/4 aristas.
 
 
+-- #############################################################################
+-- ##  09_layout_editor.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 09 — EL ALMACÉN COMO GEOMETRÍA: GRILLA, RACKS CON FORMA Y A*
 --
@@ -3586,6 +3639,10 @@ group by w.code, w.grid_ancho, w.grid_alto, w.entrada_x, w.entrada_y
 order by w.code;
 -- Esperado: 3 almacenes en 40x30, entrada 20,28, y ningún borde pasando de 40/30.
 
+
+-- #############################################################################
+-- ##  10_crud_racks.sql
+-- #############################################################################
 
 -- =============================================================================
 --  MIGRACIÓN 10 — CREAR Y ELIMINAR RACKS DESDE EL EDITOR DE PLANO
@@ -3764,7 +3821,9 @@ order by w.code;
 -- Esperado: posiciones_con_letra_incorrecta = 0 en los tres almacenes.
 
 
-
+-- #############################################################################
+-- ##  11_capacidad_y_tamano.sql
+-- #############################################################################
 
 -- =============================================================================
 --  MIGRACIÓN 11 — EL PLANO REALISTA: TAMAÑO DEL ALMACÉN Y CAPACIDAD EN CAJAS
@@ -4250,6 +4309,10 @@ order by w.code, r.code;
 -- que cambia con las medidas del rack y sube en los racks de nivel 1.
 
 
+-- #############################################################################
+-- ##  12_entrada_en_la_pared.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 12 — LA ENTRADA VIVE EN UNA PARED
 --
@@ -4600,15 +4663,26 @@ order by code;
 -- Esperado: ninguna fila con pared NULL — todas las entradas tocan un borde.
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  13_crud_almacenes.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 13 — CREAR Y ELIMINAR ALMACENES
 --
 --  Los tres almacenes venían del seed y no había forma de agregar un cuarto ni
---  de borrar uno creado por error. Eliminar sigue el criterio de eliminar_rack:
---  se borra el que está vacío, nunca el que ya guardó mercadería.
+--  de borrar uno creado por error: el <select> del dashboard los tenía escritos
+--  a mano en el HTML, así que aunque la tabla admitiera un INSERT, el almacén
+--  nuevo no habría aparecido en ninguna pantalla.
+--
+--  Eliminar sigue el mismo criterio que eliminar_rack (migración 10): uno
+--  recién creado por error se borra sin drama; uno que ya guardó mercadería NO.
+--  La diferencia es que un almacén es el contenedor de todo lo demás, así que
+--  hay más cosas que revisar — racks, inventario, órdenes, kardex y conteos.
+--
+--  Requiere 01-12. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — EL DEFAULT DE LA ENTRADA VIOLABA SU PROPIO CHECK
@@ -4817,15 +4891,36 @@ from public.warehouses w
 order by code;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  14_prefijo_de_posicion_alfanumerico.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 14 — EL PREFIJO DE UNA POSICIÓN TAMBIÉN PUEDE SER UN DÍGITO
 --
---  El prefijo del código de posición es el último carácter del código del
---  almacén. warehouses.code siempre admitió dígitos, positions.code exigía
---  letra: crear un rack en 'ALM-04' reventaba. Se relaja positions.
+--  Crear un rack en un almacén con código 'ALM-04' fallaba con:
+--      new row for relation "positions" violates check constraint
+--      "positions_code_check"
+--
+--  El prefijo del código de posición sale de la última letra del almacén
+--  (crear_rack, migración 10: right(code, 1)), así que para 'ALM-04' daba '4'
+--  y el código quedaba '4-01-01'. positions.code exigía ^[A-Z]- y lo rechazaba.
+--
+--  Las dos reglas venían de la 01 y nunca se contradijeron porque hasta la
+--  migración 13 no se podían crear almacenes: los tres del seed terminaban en
+--  A, B y C. En cuanto se pudo dar de alta uno, quedó a la vista que
+--  warehouses.code SIEMPRE admitió dígitos (^[A-Z0-9]{2,10}...) y que era
+--  positions el que no acompañaba.
+--
+--  Se relaja positions en vez de exigir que el almacén termine en letra: un
+--  '4' identifica el almacén igual de bien que una 'A', el requisito real es
+--  que el prefijo sea único (lo garantiza crear_almacen), y obligar a letra
+--  habría techado el sistema en 26 almacenes — y obligado a borrar el que ya
+--  existe. Los códigos viejos (A-03-02) siguen siendo válidos.
+--
+--  Requiere 01-13. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — positions.code ACEPTA UN PREFIJO ALFANUMÉRICO
@@ -4856,15 +4951,43 @@ group by w.code
 order by w.code;
 
 
+-- #############################################################################
+-- ##  15_cajas_reales_y_niveles.sql
+-- #############################################################################
+
 -- =============================================================================
--- =============================================================================
---  MIGRACIÓN 15 — CAJAS REALES, INFANTIL EN DOS NIVELES Y MÍNIMO DE 3 POR RACK
+--  MIGRACIÓN 15 — MEDIDAS REALES DE CAJA, INFANTIL EN DOS NIVELES,
+--                 Y UN PISO DE TRES NIVELES POR RACK
 --
---  Las cajas eran números a ojo; ahora son las medidas comerciales. El
---  calzado infantil pasa de un nivel a dos, y como un rack de 2 niveles se
---  quedaría sin sitio para adulto, el mínimo por rack sube a 3.
+--  Tres cosas que venían arrastrándose y una consecuencia:
+--
+--    1. Las cajas eran inventadas. El cálculo usaba 33x20x13 cm para adulto y
+--       25x15x10 para infantil, números puestos a ojo. Las medidas comerciales
+--       son otras y la capacidad declarada de cada rack se mueve hasta un 40%.
+--
+--    2. El calzado infantil cabía en un solo nivel. En un rack de 3 niveles eso
+--       es un tercio del mueble para toda la línea infantil.
+--
+--    3. positions.level no tenía techo (`check (level >= 1)` a secas) mientras
+--       racks.niveles sí estaba limitado a 8. El mismo número, dos reglas.
+--
+--    4. Consecuencia de ampliar lo infantil a dos niveles: un rack de 1 o 2
+--       niveles se queda SIN sitio para calzado de adulto. Y así estaban 15 de
+--       los 16 racks. Por eso el mínimo pasa de 1 a 3 niveles: dos abajo para
+--       infantil y al menos uno arriba para adulto, en todos los racks. Los que
+--       hoy tienen menos se amplían acá.
+--
+--  Lo que esta migración NO hace: mover mercadería. Las asignaciones de adulto
+--  que hoy están en el nivel 2 se quedan donde están, y la consulta del final
+--  las lista. Cambiarlas de posición en la base no las mueve del estante: el
+--  sistema diría que el par está arriba cuando la caja sigue abajo, que es
+--  exactamente el error que un WMS existe para evitar. Se reubican cuando
+--  alguien las mueva de verdad. El trigger solo valida ubicaciones nuevas, así
+--  que mientras tanto no bloquea nada — liberar una posición está exento.
+--
+--  Requiere 01-14. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — DÓNDE VIVE EL LÍMITE DE LO INFANTIL
@@ -5294,14 +5417,32 @@ where pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
 order by w.code, r.code, pos.code;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  16_ubicacion_en_movimientos.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 16 — LOS MOVIMIENTOS DICEN DÓNDE OCURRIERON
 --
---  position_id existía desde la 01 pero la vista no lo exponía: la pantalla
---  de movimientos decía qué entró, no a qué rack.
+--  inventory_movements guarda position_id desde la migración 01, pero
+--  v_movimientos_detalle nunca lo expuso: la pantalla de movimientos podía
+--  decir qué entró y cuánto, no a qué rack. Para un almacén con seis racks por
+--  edificio, "entraron 40 pares" sin decir dónde obliga a ir a buscarlos.
+--
+--  Ojo con lo que este dato significa, porque el mismo campo cambia de sentido
+--  según el tipo de movimiento (así está comentado en la tabla original):
+--      ENTRADA -> la posición es el DESTINO (dónde se guardó)
+--      SALIDA  -> la posición es el ORIGEN  (de dónde se sacó)
+--      AJUSTE  -> puede no tener ninguna: un ajuste contable no tiene sitio
+--
+--  Por eso la vista devuelve también `ubicacion_rol`, que dice cuál de las dos
+--  cosas es. Un traslado de un rack a otro NO se puede representar: haría falta
+--  un par origen/destino y la tabla solo tiene una columna. Hoy eso se registra
+--  como una SALIDA y una ENTRADA sueltas, sin nada que las vincule.
+--
+--  Requiere 01-15. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — LA VISTA EXPONE LA UBICACIÓN
@@ -5375,15 +5516,30 @@ group by movement_type, ubicacion_rol
 order by movement_type, ubicacion;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  17_reubicar_por_nivel.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 17 — REUBICAR LO QUE QUEDÓ EN EL NIVEL EQUIVOCADO
 --
---  La 15 dejó a propósito donde estaba la mercadería que quedó fuera de
---  regla. Esto es la herramienta para saldarla a medida que alguien la
---  mueve de verdad: la lista y un liberar+ubicar atómico.
+--  La migración 15 amplió lo infantil a dos niveles y dejó a propósito donde
+--  estaban las 68 asignaciones de calzado de adulto del nivel 2: cambiarlas de
+--  fila no las baja del estante, y un WMS que dice que la caja está arriba
+--  cuando sigue abajo es peor que uno que admite el pendiente.
+--
+--  Lo que falta es la otra mitad: la herramienta para saldarlas a medida que
+--  alguien las mueve de verdad. Son dos cosas —
+--
+--    - v_reubicaciones_pendientes: qué está fuera de sitio y adónde debería ir.
+--    - reubicar_asignacion(): liberar la posición vieja y ocupar la nueva en un
+--      solo paso. Hacerlo desde el cliente con dos llamadas deja la mercadería
+--      en el aire si la segunda falla: liberada de donde estaba y sin ubicar en
+--      ninguna parte, que es exactamente cómo se pierde stock en un sistema.
+--
+--  Requiere 01-16. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — QUÉ ESTÁ FUERA DE SITIO
@@ -5553,15 +5709,35 @@ group by almacen_code, rack, publico, nivel, nivel_sugerido
 order by almacen_code, rack;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  18_reubicar_repartiendo.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 18 — REUBICAR REPARTIENDO, Y SIN PELEARSE CON EL ÍNDICE ÚNICO
 --
---  Un casillero admite UNA sola asignación viva (ux_position_assignment_activa),
---  y en el nivel de adulto cabe menos que abajo porque la caja es mayor.
---  Reubicar reparte entre casilleros libres en vez de exigir uno solo.
+--  La reubicar_asignacion() de la 17 fallaba de dos maneras distintas:
+--
+--    1. "duplicate key violates ux_position_assignment_activa". Buscaba el
+--       destino sumando lo ya asignado a cada posición, como si varias
+--       asignaciones pudieran compartir un casillero. No pueden: la migración
+--       01 tiene un índice único parcial que garantiza UNA asignación viva por
+--       posición — un casillero está libre o tiene un solo artículo. La
+--       consulta elegía posiciones ocupadas y el índice, con razón, las
+--       rechazaba.
+--
+--    2. "No hay ningún hueco libre en RACK-07 para 34 unidades". Ese es real y
+--       no es un bug: en el nivel de adulto un casillero de RACK-07 admite 20
+--       cajas, no 34. La caja de hombre (35 cm de largo) entra UNA vez en los
+--       56 cm de frente del casillero; la infantil (22 cm) entra dos veces y
+--       encima apila más alto, y por eso el mismo mueble guarda 110 abajo y 20
+--       arriba. Lo que estaba mal era pretender mover el bulto entero a un solo
+--       hueco: 34 cajas físicas no caben en un espacio de 20 y hay que
+--       repartirlas, igual que se haría en el almacén de verdad.
+--
+--  Requiere 01-17. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — REUBICAR PUDIENDO REPARTIR EN VARIOS CASILLEROS
@@ -5757,15 +5933,38 @@ left join sitio on sitio.rack_id = pend.rack_id
 order by faltan desc, pend.almacen_code, pend.rack;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  19_girar_la_caja.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 19 — LA CAJA SE PUEDE GIRAR
 --
---  El cálculo probaba la caja en una sola orientación, con el lado largo
---  siempre contra el frente. En un casillero de 29 cm daba 0 cajas de adulto;
---  girada 90 grados entran 12. Se prueban las dos y gana la mejor.
+--  fn_cajas_en_slot probaba la caja en una sola orientación: el lado largo
+--  siempre contra el frente del casillero y el ancho hacia el fondo. Nadie
+--  acomoda un estante así. Girarla 90 grados es lo primero que hace cualquiera
+--  cuando no entra, y para un casillero angosto es la diferencia entre guardar
+--  algo y no guardar nada:
+--
+--    ALM-04/RACK-01 es un rack de 2 x 2 m con 7 casilleros, o sea 29 cm de
+--    frente cada uno. Una caja de adulto de 35 cm no entra a lo largo — el
+--    cálculo daba 0 y el nivel de adulto quedaba inservible. De lado ocupa
+--    25 cm de frente y 35 de fondo: entran 12.
+--
+--    En los RACK-07 (56 cm de frente) pasa de 20 a 25 cajas: a lo largo entra
+--    una sola por fila, de lado entran dos.
+--
+--  Donde el frente es holgado (1,4 m o más) no cambia nada: las dos
+--  orientaciones dan el mismo resultado y la que sobra se descarta sola.
+--
+--  Lo que NO se contempla es poner la caja de canto, apoyada en un costado.
+--  Cabría más en algunos casos, pero apilar calzado sobre el lateral de la caja
+--  lo deforma, y una capacidad que solo se alcanza maltratando la mercadería no
+--  es capacidad.
+--
+--  Requiere 01-18. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — PROBAR LAS DOS ORIENTACIONES Y QUEDARSE CON LA MEJOR
@@ -5856,16 +6055,53 @@ group by w.code, r.code, p.level
 order by w.code, r.code, p.level;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  20_casilleros_por_modelo.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 20 — CASILLEROS POR MODELO, ESTANTES SINCRONIZADOS CON EL STOCK
 --                 Y RACKS CON FORMA DE ESTANTERÍA
 --
---  Un casillero guarda un modelo con todas sus tallas; ejecutar un movimiento
---  mueve cajas en los estantes y no solo en el stock; la capacidad deja de
---  inflarse; y un rack tiene 1 o 2 m de fondo con frente del doble.
+--  Una revisión de cómo se ubica la mercadería encontró que el stock y los
+--  estantes podían contar historias distintas, y que el casillero desperdiciaba
+--  espacio por una regla que el propio sistema contradecía:
+--
+--    1. Ejecutar una SALIDA restaba de inventory.quantity pero no tocaba
+--       position_assignments: el mapa seguía mostrando las cajas que se habían
+--       ido, y con el tiempo los estantes "tenían" más pares que el stock.
+--    2. Los movimientos nunca decían de qué casillero salían ni a cuál entraban
+--       (position_id llegaba siempre NULL), así que el punto 1 ni siquiera
+--       tenía de dónde descontar.
+--    3. v_stock_sin_ubicar era de todo o nada: 100 pares con 1 caja ubicada
+--       figuraban como ubicados.
+--    4. La capacidad se recalculaba con greatest(calculado, ocupado): un
+--       casillero con más cajas de las que caben veía su capacidad inflada
+--       hasta cuadrar, en vez de quedar marcado como sobrecargado. Y
+--       capacity_units = 0 significaba "sin límite", así que el casillero
+--       demasiado angosto para una sola caja admitía cualquier cantidad.
+--    5. Un casillero admitía un solo artículo (índice único de la 01): una caja
+--       de un modelo inmovilizaba un casillero de 200. Pero el trigger de
+--       capacidad de la 02 ya sumaba varias asignaciones: la mitad del modelo
+--       compartido existía y la otra mitad lo prohibía.
+--    6. Un rack podía medir de 1x1 a 60x60 m. Una estantería real es larga y
+--       angosta: el fondo se alcanza con el brazo desde el pasillo.
+--
+--  Decisiones del jefe de almacén:
+--    - Un casillero guarda UN modelo con todas sus tallas juntas, hasta llenar
+--      su capacidad en cajas. Es como se ordena un almacén de calzado: se va al
+--      casillero del modelo y se elige la talla, sin confundir un modelo con
+--      otro.
+--    - Un rack tiene 1 m de fondo (una cara) o 2 m (dos espalda con espalda), y
+--      su frente mide al menos el doble que su fondo.
+--
+--  "En estantes" cuenta lo OCUPADA y EN_PICKING. Lo RESERVADA es sitio apartado
+--  para mercadería que todavía no llegó: ocupa lugar en el casillero, pero no
+--  son pares que existan.
+--
+--  Requiere 01-19. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — LA CAPACIDAD DICE LO QUE CABE, NO LO QUE HAY
@@ -6766,16 +7002,35 @@ select w.code as almacen, r.code as rack, r.grid_ancho || ' x ' || r.grid_alto a
  order by 1, 2;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  21_casilleros_a_medida_y_revision.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 21 — CASILLEROS A MEDIDA DE UN MODELO Y REVISIÓN DE UBICACIONES
 --
---  El sistema calcula cuántos casilleros tiene cada nivel para que cada uno
---  mida lo que ocupa un modelo (mediana del stock real); el código de posición
---  admite 3 dígitos; y una vista con su corrección por tipo revisa todo lo
---  que está fuera de lugar.
+--  1. Cuántos casilleros tiene un nivel era un número que alguien escribía, y
+--     salía mal en las dos direcciones. RACK-07 tenía 25 casilleros de 56 cm
+--     por nivel: la caja infantil entra 3 veces y sobran 11 cm en cada uno.
+--     Pero dejarlo en manos de "el tamaño que más cajas guarde" es peor: gana
+--     UN casillero de 14 m por nivel —3 557 cajas para un solo modelo—, porque
+--     menos divisiones desperdician menos al redondear. La medida la da el
+--     negocio: un casillero guarda un modelo (migración 20), así que tiene que
+--     medir lo que ocupa un modelo. Eso se calcula del stock real.
+--
+--  2. Con casilleros angostos para lo infantil, un rack largo pasa de 99
+--     casilleros: el último tramo del código admite 3 dígitos (A-07-101). Los
+--     códigos existentes, de 2, siguen valiendo y no se tocan.
+--
+--  3. Revisión de ubicaciones: una vista con todo lo que está fuera de lugar
+--     (nivel equivocado, casillero sobrecargado, stock sin ubicar, cajas
+--     fantasma) y una corrección por tipo. Las cajas fantasma no tienen
+--     corrección automática: solo un conteo sabe si miente el stock o el
+--     estante, así que se elige una por una.
+--
+--  Requiere 01-20. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — EL CÓDIGO DE POSICIÓN ADMITE 3 DÍGITOS AL FINAL
@@ -7713,15 +7968,23 @@ select tipo, count(*) as pendientes
  order by tipo;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  22_estimacion_explicada.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 22 — LA ESTIMACIÓN DICE CÓMO LLEGÓ A SU NÚMERO
 --
---  Misma regla para todos los niveles, datos distintos: la estimación devuelve
---  qué caja y qué objetivo usó cada nivel para que la pantalla lo diga.
+--  El editor mostraba "n1: 93 de 15 cm" sin decir por qué 93. La regla es la
+--  misma para todos los niveles —un casillero mide lo que ocupa un modelo—,
+--  pero con datos distintos: los niveles infantiles usan la caja de niño y lo
+--  que ocupa un modelo infantil; los de adulto, la caja de hombre y lo que
+--  ocupa un modelo de adulto. Ahora la estimación devuelve también qué caja y
+--  qué objetivo usó cada nivel, para que la pantalla lo diga.
+--
+--  Solo redefine estimar_capacidad_rack: misma firma, más datos por nivel.
+--  Requiere 01-21. Idempotente.
 -- =============================================================================
--- =============================================================================
-
 create or replace function public.estimar_capacidad_rack(
   p_grid_ancho      integer,
   p_grid_alto       integer,
@@ -7783,15 +8046,42 @@ select n->>'nivel' as nivel, n->>'publico' as publico, n->>'caja_cm' as caja_cm,
   from jsonb_array_elements(public.estimar_capacidad_rack(14, 2, 3, null)->'por_nivel') as n;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  23_aplicar_casilleros_a_todo.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 23 — TODOS LOS RACKS CON CASILLEROS A MEDIDA
 --
---  Aplica la regla de la 21 a todos los racks de una vez y reparte lo que
---  queda sobrecargado. Permite correrlo sin sesión (SQL Editor) y asigna los
---  códigos nuevos sin recorrer 999 posibles por casillero.
+--  La migración 21 dejó la regla lista pero sin aplicar: cada rack seguía con
+--  los casilleros del seed hasta que alguien apretara "Aplicar niveles y
+--  casilleros" en el editor, uno por uno. Hay racks con UN casillero de 14 m
+--  por nivel, donde un solo modelo ocupa el estante entero. Esto los ajusta
+--  todos de una vez y reparte lo que quede sobrecargado.
+--
+--  Qué significa en el almacén: ajustar un rack es poner separadores y
+--  etiquetas nuevas en sus estantes. Los casilleros que ya tenían cajas se
+--  quedan (su código está en el kardex) pero pasan a medir lo que mide uno
+--  nuevo; las cajas que ya no entran en ellos son las que físicamente quedan
+--  del otro lado del separador, y se anotan en los casilleros vecinos del
+--  mismo rack. Por eso se reparte primero dentro del mismo rack.
+--
+--  Tres cosas que había que corregir para poder hacerlo desde el SQL Editor,
+--  donde no hay ningún usuario con sesión:
+--    - fn_colocar anotaba quién ubicó con actor_actual(), que lanza error sin
+--      sesión. Ahora usa fn_usuario_actual() —la misma que usa la auditoría—:
+--      desde la app guarda al usuario, desde acá deja null.
+--    - repartir_sobrecarga exige rol, y sin sesión no hay rol. Se separa en
+--      una función interna sin rol (bloqueada para la API) y la RPC de
+--      siempre, que pide rol y llama a la interna.
+--    - fn_ajustar_casilleros buscaba el primer código libre revisando los 999
+--      posibles por cada casillero que agregaba: unas 2,8 millones de
+--      consultas para todo el almacén. Ahora carga los códigos usados una vez.
+--
+--  Requiere 01-22. Idempotente: correrla de nuevo no cambia nada, salvo que
+--  el stock haya cambiado lo que ocupa un modelo típico.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — fn_colocar ANOTA AL USUARIO SI LO HAY
@@ -8208,15 +8498,30 @@ select
 from (select current_setting('ajuste.resumen', true)::jsonb as resumen) a;
 
 
--- =============================================================================
+-- #############################################################################
+-- ##  24_codigos_con_formato.sql
+-- #############################################################################
+
 -- =============================================================================
 --  MIGRACIÓN 24 — CÓDIGOS CON FORMATO Y DUPLICADOS CON MENSAJE
 --
---  crear_rack avisa si el código ya existe en ese almacén (antes reventaba la
---  restricción única) y propone el siguiente libre. El código de almacén pasa
---  a exigir tres letras, guion y hasta seis alfanuméricos.
+--  1. crear_rack no revisaba si el código ya existía en ese almacén: reventaba
+--     la restricción única y el usuario veía "duplicate key value violates
+--     unique constraint uq_racks_warehouse_code". crear_almacen sí lo hacía
+--     desde la 13; ahora los dos avisan igual, y el del rack propone el
+--     siguiente código libre, que es lo que el usuario iba a buscar.
+--
+--  2. El código de almacén admitía casi cualquier cosa: 'AB', '12345',
+--     'A-B-C-D'. Pasa a exigir tres letras, guion y hasta seis letras o
+--     números (ALM-D, BOD-02), que es el formato que ya siguen los cuatro
+--     almacenes existentes y el que valida el formulario. Se aprieta en la
+--     función y no en el CHECK de la tabla: el CHECK es la red de seguridad
+--     para datos que entren por otro lado, y estrecharlo obligaría a migrar
+--     cualquier código heredado que no lo cumpla.
+--
+--  Requiere 01-23. Idempotente.
 -- =============================================================================
--- =============================================================================
+
 
 -- =============================================================================
 --  BLOQUE A — UN RACK REPETIDO SE AVISA, NO SE ESTRELLA
@@ -8372,3 +8677,2207 @@ select code,
        case when code ~ '^[A-Z]{3}-[A-Z0-9]{1,6}$' then 'cumple' else 'NO cumple' end as formato
   from public.warehouses
  order by code;
+
+
+-- #############################################################################
+-- ##  26_alta_de_articulo_atomica.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 26 — QUE DAR DE ALTA UN ARTÍCULO NO DEJE LA MITAD HECHA
+--
+--  Se descubrió probando el alta de punta a punta desde el formulario: el
+--  artículo se creaba y después fallaba con
+--
+--    Could not find the function public.crear_registro_inventario(...)
+--
+--  porque la migración 06 nunca llegó a correrse en esta base. Peor que el
+--  error es lo que dejaba: el INSERT en inventory_items ya había pasado, así
+--  que quedaba un artículo sin fila de inventario — sin stock, sin umbrales y
+--  sin almacén—, invisible para el dashboard y para "Existencias".
+--
+--  Eran dos llamadas separadas desde el cliente, y entre una y otra no hay
+--  transacción: si la segunda falla, la primera no se deshace. Esta migración
+--  las junta en una sola función, que es la única forma de que "crear un
+--  artículo" sea todo o nada.
+--
+--  Contiene tres cosas:
+--
+--    1. crear_registro_inventario — la de la migración 06, por si falta (es
+--       `create or replace`, así que correrla de nuevo no molesta).
+--    2. Dos CHECK que faltaban: precio y costo tienen que ser mayores que
+--       cero, y el stock máximo no puede quedar por debajo del mínimo. El
+--       formulario ya los pedía; sin esto, cualquier UPDATE los esquiva.
+--    3. crear_articulo_con_inventario — el alta completa en una transacción.
+--
+--  El mínimo NO se exige >= 1 en la tabla a propósito: cuando se ejecuta una
+--  ENTRADA de un artículo que todavía no tiene fila en ese almacén, el flujo
+--  de movimientos (migración 02) la crea con los valores por defecto. Exigir
+--  un mínimo ahí rompería la aprobación de movimientos. Que el mínimo sea al
+--  menos 1 es una regla del formulario de alta, no del dominio.
+--
+--  Requiere 01-05. Idempotente.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 1. La función de la migración 06, que falta en esta base.
+-- -----------------------------------------------------------------------------
+create or replace function public.crear_registro_inventario(
+  p_item_id      uuid,
+  p_warehouse_code text,
+  p_quantity     integer default 0,
+  p_min_stock    integer default 0,
+  p_max_stock    integer default null
+)
+returns public.inventory
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_wh_id uuid;
+  v_inv   public.inventory;
+  v_actor uuid;
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+  v_actor := public.actor_actual();
+
+  if p_quantity < 0 then
+    raise exception 'La cantidad inicial no puede ser negativa.';
+  end if;
+
+  select id into v_wh_id from public.warehouses where code = p_warehouse_code;
+  if v_wh_id is null then
+    raise exception 'No existe el almacén %.', p_warehouse_code;
+  end if;
+
+  if exists (select 1 from public.inventory where item_id = p_item_id and warehouse_id = v_wh_id) then
+    raise exception 'Este artículo ya tiene un registro de inventario en ese almacén. Edítalo en vez de crear otro.';
+  end if;
+
+  insert into public.inventory (item_id, warehouse_id, quantity, min_stock, max_stock)
+  values (p_item_id, v_wh_id, p_quantity, p_min_stock, p_max_stock)
+  returning * into v_inv;
+
+  -- Ninguna unidad de stock existe sin asiento en el kardex, tampoco la carga
+  -- inicial: si el artículo ya tenía existencias físicas al digitalizarlo,
+  -- esto lo deja igual de trazable que un movimiento normal.
+  if p_quantity > 0 then
+    insert into public.stock_ledger (item_id, warehouse_id, qty_delta, qty_before, qty_after, executed_by, notes)
+    values (p_item_id, v_wh_id, p_quantity, 0, p_quantity, v_actor, 'Carga inicial de inventario (artículo nuevo)');
+  end if;
+
+  return v_inv;
+end;
+$$;
+
+grant execute on function public.crear_registro_inventario(uuid, text, integer, integer, integer) to authenticated;
+
+comment on function public.crear_registro_inventario is
+  'Único camino para que exista una fila de inventory: SUPERVISOR+ , dispara un asiento en stock_ledger si arranca con cantidad > 0.';
+
+
+-- -----------------------------------------------------------------------------
+-- 2. Los CHECK que el formulario ya pedía y la tabla no.
+--
+--    Los 80 artículos y las 80 filas de inventario que hay hoy cumplen los
+--    tres (se verificó antes de agregarlos), así que no hay nada que migrar.
+-- -----------------------------------------------------------------------------
+
+-- Un artículo que se vende a 0 o que costó 0 es un dato sin cargar, no un
+-- precio. El `is null` sigue permitido: el precio puede faltar todavía.
+alter table public.inventory_items drop constraint if exists inventory_items_price_check;
+alter table public.inventory_items
+  add constraint inventory_items_price_check check (price is null or price > 0);
+
+alter table public.inventory_items drop constraint if exists inventory_items_cost_check;
+alter table public.inventory_items
+  add constraint inventory_items_cost_check check (cost is null or cost > 0);
+
+-- Un máximo por debajo del mínimo deja al artículo "bajo mínimo" y "sobre
+-- máximo" a la vez: no es un umbral, es una contradicción.
+alter table public.inventory drop constraint if exists ck_inventory_max_sobre_min;
+alter table public.inventory
+  add constraint ck_inventory_max_sobre_min
+  check (max_stock is null or min_stock is null or max_stock >= min_stock);
+
+comment on constraint ck_inventory_max_sobre_min on public.inventory is
+  'El stock máximo no puede quedar por debajo del mínimo (el artículo estaría bajo mínimo y sobre máximo a la vez).';
+
+
+-- -----------------------------------------------------------------------------
+-- 3. El alta completa, en una sola transacción.
+--
+--    Recibe el artículo y el almacén donde se registra. Si algo falla —el SKU
+--    repetido, la talla ya cargada para ese modelo, el almacén inexistente—
+--    no queda nada a medias, porque todo ocurre dentro de la misma llamada.
+-- -----------------------------------------------------------------------------
+create or replace function public.crear_articulo_con_inventario(
+  p_product_id     uuid,
+  p_sku            text,
+  p_size_label     text,
+  p_warehouse_code text,
+  p_size_system    text    default 'EU',
+  p_price          numeric default null,
+  p_cost           numeric default null,
+  p_weight         numeric default null,
+  p_length         numeric default null,
+  p_width          numeric default null,
+  p_height         numeric default null,
+  p_min_stock      integer default 0,
+  p_max_stock      integer default null
+)
+returns public.inventory_items
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_item  public.inventory_items;
+  v_wh_id uuid;
+  v_sku   text := upper(btrim(p_sku));
+  v_talla text := btrim(p_size_label);
+begin
+  -- El mismo rol que exige crear_registro_inventario: crear el artículo sin
+  -- poder crear su inventario no serviría de nada.
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+
+  if not exists (select 1 from public.products where id = p_product_id) then
+    raise exception 'No existe el producto indicado.';
+  end if;
+
+  select id into v_wh_id from public.warehouses where code = p_warehouse_code;
+  if v_wh_id is null then
+    raise exception 'No existe el almacén %.', p_warehouse_code;
+  end if;
+
+  if p_max_stock is not null and p_max_stock < p_min_stock then
+    raise exception 'El stock máximo (%) no puede ser menor que el mínimo (%).', p_max_stock, p_min_stock;
+  end if;
+
+  insert into public.inventory_items
+    (product_id, sku, size_label, size_system, price, cost, weight, length, width, height)
+  values
+    (p_product_id, v_sku, v_talla, coalesce(p_size_system, 'EU'),
+     p_price, p_cost, p_weight, p_length, p_width, p_height)
+  returning * into v_item;
+
+  -- La cantidad arranca en 0 siempre: el stock entra por un movimiento de
+  -- ENTRADA aprobado, nunca por el alta del catálogo.
+  insert into public.inventory (item_id, warehouse_id, quantity, min_stock, max_stock)
+  values (v_item.id, v_wh_id, 0, p_min_stock, p_max_stock);
+
+  return v_item;
+end;
+$$;
+
+grant execute on function public.crear_articulo_con_inventario(
+  uuid, text, text, text, text, numeric, numeric, numeric, numeric, numeric, numeric, integer, integer
+) to authenticated;
+
+comment on function public.crear_articulo_con_inventario is
+  'Alta de artículo + su registro de inventario en una sola transacción: si algo falla no queda un artículo sin inventario. SUPERVISOR+.';
+
+
+-- #############################################################################
+-- ##  27_publico_y_proveedor_por_talla.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 27 — EL PÚBLICO Y EL PROVEEDOR PASAN A SER DE CADA TALLA
+--
+--  Dos cosas que el formulario no dejaba hacer, y las dos por el mismo motivo:
+--  vivían en `products` (el modelo) cuando en realidad son de cada artículo.
+--
+--  1. EL PROVEEDOR. El README lo pone en inventory_items; el esquema lo había
+--     puesto en products. Consecuencia: el mismo par comprado a otro proveedor
+--     no se podía dar de alta, porque habría que duplicar el modelo entero.
+--     Ahora `inventory_items.supplier_id` manda, y el del modelo queda como
+--     sugerencia para las tallas nuevas.
+--
+--  2. EL PÚBLICO. Estaba en products, así que un modelo era entero de niño o
+--     entero de adulto, y el selector tenía que ir bloqueado. Pero el público
+--     es de la talla: la caja de una 30 es infantil vaya en el modelo que
+--     vaya, y es lo que decide en qué nivel del rack puede ir.
+--
+--  Nada se mueve de sitio. Las dos columnas se rellenan con el valor del
+--  modelo, así que los 80 artículos quedan exactamente como estaban, y como
+--  hoy ningún modelo mezcla públicos, el tamaño de casillero que calcula
+--  fn_cajas_por_modelo da el mismo resultado que antes: no hay que volver a
+--  ajustar los racks.
+--
+--  Los objetos que leían products.audience se vuelven a crear leyendo el del
+--  artículo. Son los que sostienen la ubicación de los 2376 pares, así que van
+--  copiados de su definición vigente con el cambio justo, no reescritos.
+--
+--  Requiere 01-26. Idempotente.
+-- =============================================================================
+
+
+-- =============================================================================
+--  BLOQUE A — LAS COLUMNAS NUEVAS
+-- =============================================================================
+
+-- Un código corto por proveedor, para poder distinguir en el SKU el mismo par
+-- comprado a dos sitios: ZAP-030-41 e ZAP-030-41-SPO.
+alter table public.suppliers add column if not exists code text;
+
+update public.suppliers
+   set code = upper(substring(regexp_replace(slug, '[^a-z0-9]', '', 'g') from 1 for 3))
+ where code is null;
+
+alter table public.suppliers drop constraint if exists ck_suppliers_code;
+alter table public.suppliers
+  add constraint ck_suppliers_code check (code is null or code ~ '^[A-Z0-9]{2,6}$');
+
+create unique index if not exists ux_suppliers_code on public.suppliers (code);
+
+comment on column public.suppliers.code is
+  'Código corto para el SKU cuando el mismo modelo y talla vienen de más de un proveedor.';
+
+
+-- El proveedor del artículo. NULL significa "el que tenga el modelo": no se
+-- fuerza, porque products.supplier_id puede quedar en NULL al borrar uno.
+alter table public.inventory_items
+  add column if not exists supplier_id uuid references public.suppliers (id) on delete set null;
+
+update public.inventory_items it
+   set supplier_id = pr.supplier_id
+  from public.products pr
+ where pr.id = it.product_id
+   and it.supplier_id is null;
+
+comment on column public.inventory_items.supplier_id is
+  'A quién se le compra ESTA talla. El mismo modelo puede venir de varios proveedores, cada uno con su SKU.';
+
+
+-- El público del artículo. Es lo que decide el tamaño de la caja y el nivel
+-- del rack, así que va aquí y no en el modelo.
+alter table public.inventory_items add column if not exists audience text;
+
+update public.inventory_items it
+   set audience = case when pr.audience = 'NINO' then 'NINO' else 'ADULTO' end
+  from public.products pr
+ where pr.id = it.product_id
+   and it.audience is null;
+
+alter table public.inventory_items alter column audience set default 'ADULTO';
+alter table public.inventory_items alter column audience set not null;
+
+alter table public.inventory_items drop constraint if exists ck_items_audience;
+alter table public.inventory_items
+  add constraint ck_items_audience check (audience in ('ADULTO', 'NINO'));
+
+comment on column public.inventory_items.audience is
+  'Niño o adulto, POR TALLA. Decide el tamaño de caja (fn_medidas_caja) y en qué nivel del rack puede ubicarse.';
+
+
+-- Con el proveedor en el artículo, "el mismo modelo y talla" deja de ser
+-- duplicado si viene de otro proveedor. Va como índice y no como constraint
+-- porque un supplier_id en NULL no chocaría con nada: dos filas sin proveedor
+-- del mismo modelo y talla seguirían siendo el duplicado que se quiere evitar.
+alter table public.inventory_items drop constraint if exists uq_items_product_size;
+drop index if exists public.uq_items_product_size;
+
+create unique index if not exists ux_items_product_size_supplier
+  on public.inventory_items (
+    product_id, size_label, size_system,
+    coalesce(supplier_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  );
+
+comment on index public.ux_items_product_size_supplier is
+  'Impide repetir la misma talla del mismo modelo y proveedor. Con otro proveedor sí se permite: es otro artículo, con su propio SKU.';
+
+
+-- =============================================================================
+--  BLOQUE B — LOS OBJETOS QUE LEÍAN EL PÚBLICO DEL MODELO
+--
+--  Copiados de su definición vigente (migraciones 17, 20, 21 y 23) cambiando
+--  únicamente de dónde sale el público.
+-- =============================================================================
+
+-- El trigger que impide dejar una caja en un nivel que no le corresponde.
+
+create or replace function public.fn_validar_publico_por_nivel()
+returns trigger
+language plpgsql
+set search_path = public
+as $fn$
+declare
+  v_audience text;
+  v_level    smallint;
+  v_tope     integer := public.fn_niveles_infantiles();
+begin
+  if new.status = 'LIBERADA' then
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE'
+     and new.position_id = old.position_id
+     and new.item_id     = old.item_id
+     and new.quantity   <= old.quantity then
+    return new;
+  end if;
+
+  select it.audience into v_audience
+    from public.inventory_items it
+   where it.id = new.item_id;
+
+  select level into v_level from public.positions where id = new.position_id;
+
+  if v_level is null then
+    raise exception 'La posición % no tiene nivel definido.', new.position_id;
+  end if;
+
+  if v_audience = 'NINO' and v_level > v_tope then
+    raise exception
+      'Calzado infantil solo puede ubicarse hasta el nivel % (los de abajo). La posición elegida está en el nivel %.',
+      v_tope, v_level
+      using errcode = 'check_violation';
+  end if;
+
+  if v_audience = 'ADULTO' and v_level <= v_tope then
+    raise exception
+      'Calzado de adulto no puede ubicarse en el nivel %: los niveles 1 a % están reservados para calzado infantil.',
+      v_level, v_tope
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$fn$;
+
+-- El mapa del almacén.
+
+create or replace view public.v_mapa_almacen as
+select
+  pos.id            as position_id,
+  w.code            as almacen_code,
+  w.name            as almacen,
+  r.code            as rack,
+  pos.code          as posicion,
+  pos.level,
+  pos.capacity_units,
+  pa.id             as assignment_id,
+  pa.status         as estado_ocupacion,   -- NULL = libre
+  pa.quantity       as unidades,
+  pa.item_id,
+  it.sku,
+  pr.name           as producto,
+  it.size_label     as talla,
+  it.audience,
+  pa.assigned_at,
+  it.product_id,
+  pr.model_code
+from public.positions pos
+join public.racks      r on r.id = pos.rack_id
+join public.warehouses w on w.id = r.warehouse_id
+left join public.position_assignments pa
+       on pa.position_id = pos.id
+      and pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+left join public.inventory_items it on it.id = pa.item_id
+left join public.products        pr on pr.id = it.product_id;
+
+alter view public.v_mapa_almacen set (security_invoker = on);
+
+-- Lo que quedó en un nivel que su público ya no admite.
+
+create or replace view public.v_reubicaciones_pendientes as
+select
+  pa.id                       as assignment_id,
+  pa.quantity                 as unidades,
+  pa.status,
+  it.id                       as item_id,
+  it.sku,
+  pr.name                     as producto,
+  it.size_label               as talla,
+  it.audience                 as publico,
+  w.code                      as almacen_code,
+  w.name                      as almacen,
+  r.id                        as rack_id,
+  r.code                      as rack,
+  pos.id                      as position_id,
+  pos.code                    as posicion,
+  pos.level                   as nivel,
+  case when it.audience = 'NINO' then 1 else public.fn_niveles_infantiles() + 1 end
+                              as nivel_sugerido
+from public.position_assignments pa
+join public.positions       pos on pos.id = pa.position_id
+join public.racks           r   on r.id   = pos.rack_id
+join public.warehouses      w   on w.id   = r.warehouse_id
+join public.inventory_items it  on it.id  = pa.item_id
+join public.products        pr  on pr.id  = it.product_id
+where pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+  and (
+    (it.audience = 'NINO'   and pos.level >  public.fn_niveles_infantiles())
+ or (it.audience = 'ADULTO' and pos.level <= public.fn_niveles_infantiles())
+  );
+
+alter view public.v_reubicaciones_pendientes set (security_invoker = on);
+
+-- Mover una asignación a otro casillero.
+
+create or replace function public.reubicar_asignacion(
+  p_assignment_id uuid,
+  p_position_id   uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_asg      public.position_assignments;
+  v_origen   public.positions;
+  v_rack     text;
+  v_destino  record;
+  v_tope     integer := public.fn_niveles_infantiles();
+  v_publico  text;
+  v_modelo   uuid;
+  v_restante integer;
+  v_cuanto   integer;
+  v_usadas   integer := 0;
+  v_donde    text := '';
+begin
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+
+  select * into v_asg from public.position_assignments where id = p_assignment_id;
+  if v_asg.id is null then
+    raise exception 'Esa ubicación ya no existe.';
+  end if;
+  if v_asg.status = 'LIBERADA' then
+    raise exception 'Esa ubicación ya fue liberada: no hay nada que mover.';
+  end if;
+
+  select * into v_origen from public.positions where id = v_asg.position_id;
+  -- Con el almacén delante: los códigos de rack se repiten entre almacenes.
+  select w.code || ' · ' || r.code into v_rack
+    from public.racks r
+    join public.warehouses w on w.id = r.warehouse_id
+   where r.id = v_origen.rack_id;
+
+  select it.audience, it.product_id into v_publico, v_modelo
+    from public.inventory_items it
+   where it.id = v_asg.item_id;
+
+  -- Se libera primero; si algo falla más abajo, la excepción revierte también
+  -- esto. La caja nunca queda en el limbo.
+  update public.position_assignments
+     set status = 'LIBERADA', released_at = now(), updated_at = now()
+   where id = p_assignment_id;
+
+  v_restante := v_asg.quantity;
+
+  for v_destino in
+    select p.id, p.code, p.level, p.slot,
+           p.capacity_units - coalesce(oc.ocupado, 0) as libre,
+           coalesce(oc.misma_talla, false)            as misma_talla,
+           oc.ocupado is not null                     as mismo_modelo
+      from public.positions p
+      left join lateral (
+        select sum(a.quantity)                    as ocupado,
+               bool_or(a.item_id = v_asg.item_id) as misma_talla,
+               bool_or(it.product_id <> v_modelo) as otro_modelo
+          from public.position_assignments a
+          join public.inventory_items it on it.id = a.item_id
+         where a.position_id = p.id
+           and a.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+      ) oc on true
+     where (p_position_id is null or p.id = p_position_id)
+       and (p_position_id is not null or p.rack_id = v_origen.rack_id)
+       and p.id <> v_origen.id
+       and p.is_active
+       and case when v_publico = 'NINO'   then p.level <= v_tope
+                when v_publico = 'ADULTO' then p.level >  v_tope
+                else true end
+       and not coalesce(oc.otro_modelo, false)
+       and p.capacity_units - coalesce(oc.ocupado, 0) > 0
+     order by misma_talla desc, mismo_modelo desc, libre desc, p.level, p.slot
+  loop
+    exit when v_restante <= 0;
+
+    v_cuanto := least(v_restante, v_destino.libre);
+
+    update public.position_assignments
+       set quantity = quantity + v_cuanto, updated_at = now()
+     where position_id = v_destino.id
+       and item_id     = v_asg.item_id
+       and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING');
+    if not found then
+      insert into public.position_assignments (position_id, item_id, quantity, status, notes)
+      values (v_destino.id, v_asg.item_id, v_cuanto, v_asg.status,
+              'Reubicada desde ' || v_origen.code || ' (nivel ' || v_origen.level || ')');
+    end if;
+
+    v_restante := v_restante - v_cuanto;
+    v_usadas   := v_usadas + 1;
+    v_donde    := v_donde || case when v_donde = '' then '' else ', ' end
+                          || v_destino.code || ' (' || v_cuanto || ')';
+  end loop;
+
+  if v_restante > 0 then
+    if v_usadas = 0 then
+      raise exception 'En % no queda ningún casillero donde pueda ir este modelo de %: están ocupados por otros modelos, llenos, o son más angostos que la caja.',
+        v_rack, lower(coalesce(v_publico, 'ese público'));
+    end if;
+    raise exception 'En % caben % de las % cajas en los % casilleros con sitio para este modelo. Faltan % — reparte el resto en otro rack.',
+      v_rack, v_asg.quantity - v_restante, v_asg.quantity, v_usadas, v_restante;
+  end if;
+
+  return jsonb_build_object(
+    'estado',     'REUBICADA',
+    'casilleros', v_usadas,
+    'desde',      v_origen.code,
+    'mensaje',    case when v_usadas = 1
+                    then 'Movida de ' || v_origen.code || ' a ' || v_donde || '.'
+                    else v_asg.quantity || ' cajas de ' || v_origen.code ||
+                         ' repartidas en ' || v_usadas || ' casilleros: ' || v_donde || '.'
+                  end
+  );
+end;
+$fn$;
+
+-- Buscar hueco y colocar.
+
+create or replace function public.fn_colocar(
+  p_warehouse_id   uuid,
+  p_rack_preferido uuid,
+  p_item_id        uuid,
+  p_cantidad       integer,
+  p_status         text,
+  p_excluir        uuid,
+  p_nota           text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_tope     integer := public.fn_niveles_infantiles();
+  v_publico  text;
+  v_modelo   uuid;
+  v_sku      text;
+  v_almacen  text;
+  v_destino  record;
+  v_restante integer := p_cantidad;
+  v_cuanto   integer;
+  v_usadas   integer := 0;
+  v_donde    text := '';
+begin
+  select it.audience, it.product_id, it.sku into v_publico, v_modelo, v_sku
+    from public.inventory_items it
+   where it.id = p_item_id;
+  select code into v_almacen from public.warehouses where id = p_warehouse_id;
+
+  for v_destino in
+    select p.id, p.code, r.code as rack_code,
+           p.capacity_units - coalesce(oc.ocupado, 0)     as libre,
+           coalesce(oc.misma_talla, false)                as misma_talla,
+           oc.ocupado is not null                         as mismo_modelo,
+           coalesce(p.rack_id = p_rack_preferido, false)  as preferido
+      from public.positions p
+      join public.racks r on r.id = p.rack_id
+      left join lateral (
+        select sum(a.quantity)                    as ocupado,
+               bool_or(a.item_id = p_item_id)     as misma_talla,
+               bool_or(it.product_id <> v_modelo) as otro_modelo
+          from public.position_assignments a
+          join public.inventory_items it on it.id = a.item_id
+         where a.position_id = p.id
+           and a.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+      ) oc on true
+     where r.warehouse_id = p_warehouse_id
+       and (p_excluir is null or p.id <> p_excluir)
+       and p.is_active
+       and case when v_publico = 'NINO'   then p.level <= v_tope
+                when v_publico = 'ADULTO' then p.level >  v_tope
+                else true end
+       and not coalesce(oc.otro_modelo, false)
+       and p.capacity_units - coalesce(oc.ocupado, 0) > 0
+     order by preferido desc, misma_talla desc, mismo_modelo desc, libre desc, r.code, p.level, p.code
+  loop
+    exit when v_restante <= 0;
+
+    v_cuanto := least(v_restante, v_destino.libre);
+
+    update public.position_assignments
+       set quantity = quantity + v_cuanto, updated_at = now()
+     where position_id = v_destino.id
+       and item_id     = p_item_id
+       and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING');
+    if not found then
+      insert into public.position_assignments (position_id, item_id, quantity, status, assigned_by, notes)
+      values (v_destino.id, p_item_id, v_cuanto, coalesce(p_status, 'OCUPADA'),
+              public.fn_usuario_actual(), p_nota);
+    end if;
+
+    v_restante := v_restante - v_cuanto;
+    v_usadas   := v_usadas + 1;
+    v_donde    := v_donde || case when v_donde = '' then '' else ', ' end
+                          || v_destino.rack_code || ' ' || v_destino.code || ' (' || v_cuanto || ')';
+  end loop;
+
+  if v_restante > 0 then
+    raise exception 'En % no queda sitio para % de las % cajas de %: los casilleros donde podría ir están llenos o guardan otro modelo. Amplía un rack o crea otro.',
+      v_almacen, v_restante, p_cantidad, v_sku;
+  end if;
+
+  return jsonb_build_object('casilleros', v_usadas, 'donde', v_donde);
+end;
+$fn$;
+
+-- El tamaño objetivo de un casillero. Antes agrupaba por modelo y filtraba por
+-- el público del modelo; ahora la unidad es "modelo y público", porque un
+-- mismo modelo puede tener tallas de niño y de adulto y sus cajas no miden lo
+-- mismo. Mientras ningún modelo mezcle públicos el resultado es idéntico.
+create or replace function public.fn_cajas_por_modelo(p_infantil boolean)
+returns integer
+language sql
+stable
+set search_path = public
+as $fn$
+  with por_modelo as (
+    select it.product_id, it.audience, sum(inv.quantity) as cajas
+      from public.inventory_items it
+      join public.inventory       inv on inv.item_id = it.id
+     where (it.audience = 'NINO') = p_infantil
+     group by it.product_id, it.audience
+    having sum(inv.quantity) > 0
+  )
+  select coalesce(
+           least(80, greatest(20, round(percentile_cont(0.5) within group (order by cajas))::integer)),
+           40)
+    from por_modelo;
+$fn$;
+
+comment on function public.fn_cajas_por_modelo is
+  'Mediana de cajas en stock por modelo y público, acotada entre 20 y 80. Es el tamaño objetivo de un casillero.';
+
+
+-- =============================================================================
+--  BLOQUE C — EL ALTA, CON PROVEEDOR Y PÚBLICO PROPIOS
+-- =============================================================================
+-- La versión de la migración 26 se retira ANTES de crear la nueva. Si se
+-- dejara para después, las dos convivirían un momento y cualquier referencia
+-- a la función por su nombre —el comment de aquí abajo, sin ir más lejos— sería
+-- ambigua ("function name is not unique"). Además PostgREST no sabría cuál
+-- elegir cuando la llamada no trae los parámetros nuevos.
+drop function if exists public.crear_articulo_con_inventario(
+  uuid, text, text, text, text, numeric, numeric, numeric, numeric, numeric, numeric, integer, integer
+);
+
+create or replace function public.crear_articulo_con_inventario(
+  p_product_id     uuid,
+  p_sku            text,
+  p_size_label     text,
+  p_warehouse_code text,
+  p_size_system    text    default 'EU',
+  p_price          numeric default null,
+  p_cost           numeric default null,
+  p_weight         numeric default null,
+  p_length         numeric default null,
+  p_width          numeric default null,
+  p_height         numeric default null,
+  p_min_stock      integer default 0,
+  p_max_stock      integer default null,
+  p_supplier_id    uuid    default null,
+  p_audience       text    default null
+)
+returns public.inventory_items
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_item     public.inventory_items;
+  v_wh_id    uuid;
+  v_sku      text := upper(btrim(p_sku));
+  v_talla    text := btrim(p_size_label);
+  v_publico  text;
+  v_prov     uuid := p_supplier_id;
+begin
+  perform public.fn_exigir_rol('SUPERVISOR', 'JEFE');
+
+  -- Sin público explícito se hereda el del modelo; sin proveedor, también.
+  select case when coalesce(p_audience, pr.audience) = 'NINO' then 'NINO' else 'ADULTO' end,
+         coalesce(v_prov, pr.supplier_id)
+    into v_publico, v_prov
+    from public.products pr
+   where pr.id = p_product_id;
+
+  if v_publico is null then
+    raise exception 'No existe el producto indicado.';
+  end if;
+
+  select id into v_wh_id from public.warehouses where code = p_warehouse_code;
+  if v_wh_id is null then
+    raise exception 'No existe el almacén %.', p_warehouse_code;
+  end if;
+
+  if p_max_stock is not null and p_max_stock < p_min_stock then
+    raise exception 'El stock máximo (%) no puede ser menor que el mínimo (%).', p_max_stock, p_min_stock;
+  end if;
+
+  insert into public.inventory_items
+    (product_id, sku, size_label, size_system, price, cost, weight, length, width, height,
+     supplier_id, audience)
+  values
+    (p_product_id, v_sku, v_talla, coalesce(p_size_system, 'EU'),
+     p_price, p_cost, p_weight, p_length, p_width, p_height,
+     v_prov, v_publico)
+  returning * into v_item;
+
+  -- La cantidad arranca en 0 siempre: el stock entra por un movimiento de
+  -- ENTRADA aprobado, nunca por el alta del catálogo.
+  insert into public.inventory (item_id, warehouse_id, quantity, min_stock, max_stock)
+  values (v_item.id, v_wh_id, 0, p_min_stock, p_max_stock);
+
+  return v_item;
+end;
+$$;
+
+grant execute on function public.crear_articulo_con_inventario(
+  uuid, text, text, text, text, numeric, numeric, numeric, numeric, numeric, numeric, integer, integer, uuid, text
+) to authenticated;
+
+-- Con la lista de argumentos: el nombre solo vuelve a ser ambiguo en cuanto
+-- exista una segunda versión.
+comment on function public.crear_articulo_con_inventario(
+  uuid, text, text, text, text, numeric, numeric, numeric, numeric, numeric, numeric, integer, integer, uuid, text
+) is
+  'Alta de artículo + su registro de inventario en una sola transacción. El público y el proveedor son de la talla; si no vienen, se heredan del modelo. SUPERVISOR+.';
+
+
+-- =============================================================================
+--  BLOQUE D — UN SKU QUE NO SE ESCRIBE A MANO
+--
+--  El SKU es el modelo y la talla; cuando esa combinación ya existe para otro
+--  proveedor, se le agrega el código del proveedor. Lo arma también el cliente
+--  para mostrarlo mientras se escribe, pero la última palabra la tiene esta
+--  función: es la que ve todos los artículos, incluidos los que otro usuario
+--  acaba de crear.
+-- =============================================================================
+create or replace function public.fn_sku_sugerido(
+  p_product_id  uuid,
+  p_size_label  text,
+  p_supplier_id uuid default null
+)
+returns text
+language plpgsql
+stable
+set search_path = public
+as $fn$
+declare
+  v_modelo text;
+  v_talla  text := upper(replace(btrim(p_size_label), '.', '-'));
+  v_base   text;
+  v_cod    text;
+  v_sku    text;
+  v_n      integer := 2;
+begin
+  select model_code into v_modelo from public.products where id = p_product_id;
+  if v_modelo is null or v_talla = '' then
+    return null;
+  end if;
+
+  v_base := v_modelo || '-' || v_talla;
+
+  -- Libre: es la primera vez que se carga esta talla de este modelo.
+  if not exists (select 1 from public.inventory_items where sku = v_base) then
+    return v_base;
+  end if;
+
+  -- Ocupado: se distingue por proveedor, que es el motivo por el que puede
+  -- repetirse el modelo y la talla.
+  select code into v_cod from public.suppliers where id = p_supplier_id;
+  if v_cod is not null then
+    v_sku := v_base || '-' || v_cod;
+    if not exists (select 1 from public.inventory_items where sku = v_sku) then
+      return v_sku;
+    end if;
+  end if;
+
+  -- Sin proveedor o con el código ya usado, un correlativo antes que fallar.
+  loop
+    v_sku := v_base || '-' || v_n::text;
+    exit when not exists (select 1 from public.inventory_items where sku = v_sku);
+    v_n := v_n + 1;
+  end loop;
+  return v_sku;
+end;
+$fn$;
+
+grant execute on function public.fn_sku_sugerido(uuid, text, uuid) to authenticated;
+
+comment on function public.fn_sku_sugerido is
+  'El SKU que le toca a una talla: modelo-talla, más el código del proveedor si esa combinación ya existe.';
+
+
+-- #############################################################################
+-- ##  28_medidas_de_caja_en_los_articulos.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 28 — LAS MEDIDAS DE LA CAJA, EN LOS ARTÍCULOS QUE YA EXISTÍAN
+--
+--  Los 80 artículos se cargaron antes de que el formulario propusiera la caja
+--  estándar, así que tienen peso, largo, ancho y alto en NULL: al editarlos,
+--  esos cuatro campos salían vacíos. El README los pide en el formulario de
+--  edición, y el valor del inventario y la capacidad de los casilleros se
+--  razonan sobre esas medidas, así que no deberían quedar sin llenar.
+--
+--  Las medidas son las de LA CAJA, no las del zapato: es lo que ocupa sitio en
+--  el estante, y es lo que ya usa el cálculo de capacidad.
+--
+--  Se leen de fn_medidas_caja para que no puedan desincronizarse del cálculo
+--  de casilleros: esa función las da en metros y por nivel, así que se pide la
+--  del primer nivel (infantil) y la del primero que no lo es (adulto), y se
+--  pasan a centímetros, que es la unidad de estas columnas.
+--
+--  Solo rellena lo que falta. Una medida cargada a mano se respeta: puede ser
+--  un modelo con caja distinta, y pisarla sería perder el dato.
+--
+--  Requiere 01-27. Idempotente.
+-- =============================================================================
+
+with caja as (
+  select 'NINO'::text   as publico,
+         public.fn_medidas_caja(1) as m,
+         0.600::numeric            as kg
+  union all
+  select 'ADULTO',
+         public.fn_medidas_caja(public.fn_niveles_infantiles() + 1),
+         0.900::numeric
+)
+update public.inventory_items it
+   set length = coalesce(it.length, round(caja.m[1] * 100, 2)),
+       width  = coalesce(it.width,  round(caja.m[2] * 100, 2)),
+       height = coalesce(it.height, round(caja.m[3] * 100, 2)),
+       weight = coalesce(it.weight, caja.kg),
+       updated_at = now()
+  from caja
+ where caja.publico = it.audience
+   and (it.length is null or it.width is null or it.height is null or it.weight is null);
+
+
+comment on column public.inventory_items.weight is
+  'Peso de la caja en kilos. Lo propone el formulario según el público; se puede corregir.';
+comment on column public.inventory_items.length is
+  'Largo de la CAJA en centímetros (no del zapato): es lo que ocupa en el estante. Infantil 22, adulto 35.';
+comment on column public.inventory_items.width is
+  'Ancho de la CAJA en centímetros. Infantil 15, adulto 25.';
+comment on column public.inventory_items.height is
+  'Alto de la CAJA en centímetros. Infantil 9, adulto 13.';
+
+
+-- Qué quedó. Si "sin_medidas" no es 0, hay artículos con un audience que esta
+-- migración no contempla y habría que mirarlos uno a uno.
+do $$
+declare
+  v_sin  integer;
+  v_nino integer;
+  v_adu  integer;
+begin
+  select count(*) filter (where length is null or width is null or height is null or weight is null),
+         count(*) filter (where audience = 'NINO'),
+         count(*) filter (where audience = 'ADULTO')
+    into v_sin, v_nino, v_adu
+    from public.inventory_items
+   where deleted_at is null;
+
+  raise notice 'Artículos vivos: % infantiles, % de adulto. Sin medidas: %.', v_nino, v_adu, v_sin;
+end;
+$$;
+
+
+-- #############################################################################
+-- ##  29_el_casillero_sigue_al_movimiento.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 29 — EL CASILLERO SIGUE EL CICLO DEL MOVIMIENTO
+--
+--  position_assignments tenía tres estados (RESERVADA, OCUPADA, EN_PICKING)
+--  pero ningún proceso ponía dos de ellos: solo se conseguían a mano desde el
+--  modal de ubicar. El ciclo del movimiento y el del casillero corrían por
+--  separado, y había que acordarse de reflejar uno en el otro.
+--
+--  A partir de aquí, si el movimiento lleva casillero:
+--
+--    ENTRADA  crear   -> RESERVADA   (el hueco queda apartado; aún no hay cajas)
+--             ejecutar-> OCUPADA     (llegaron: la reserva se convierte)
+--             rechazar-> se libera   (el hueco vuelve a estar disponible)
+--
+--    SALIDA   crear   -> EN_PICKING  (las cajas están, pero comprometidas)
+--             ejecutar-> se descuenta; vuelve a OCUPADA si queda saldo
+--             rechazar-> vuelve a OCUPADA
+--
+--  Tres decisiones que conviene tener presentes:
+--
+--  1. La marca es del CASILLERO entero, no de un número de cajas. El índice
+--     ux_position_item_activa admite una sola fila viva por casillero y
+--     artículo, así que no se puede partir en "15 ocupadas + 10 en picking".
+--     EN_PICKING significa "este casillero tiene un pedido encima"; cuántas
+--     cajas salen lo dice el movimiento.
+--
+--  2. Si el casillero YA guarda ese artículo, una entrada no crea reserva: el
+--     sitio ya es suyo y la fila viva es la misma. La capacidad se comprueba
+--     igual al ejecutar.
+--
+--  3. Reservar ocupa capacidad de verdad. Es lo que se quiere —apartar sitio
+--     es apartarlo— pero significa que una entrada a un casillero sin hueco
+--     se rechaza al crearla, no al ejecutarla.
+--
+--  movement_id dice qué movimiento dejó la marca. Sirve para distinguir la que
+--  puso un movimiento de la que puso una persona a mano, y para no deshacer la
+--  de otro.
+--
+--  Requiere 01-28. Idempotente.
+-- =============================================================================
+
+alter table public.position_assignments
+  add column if not exists movement_id uuid references public.inventory_movements (id) on delete set null;
+
+comment on column public.position_assignments.movement_id is
+  'Movimiento que dejó esta marca (RESERVADA o EN_PICKING). Se limpia al ejecutarlo o rechazarlo. NULL en las asignaciones puestas a mano.';
+
+create index if not exists ix_assignments_movement
+  on public.position_assignments (movement_id) where movement_id is not null;
+
+
+-- =============================================================================
+--  BLOQUE A — ¿QUEDA ALGÚN PEDIDO VIVO SOBRE ESTE CASILLERO?
+-- =============================================================================
+-- Se pregunta al resolver una salida: si había dos en cola, sacar una no
+-- descompromete el casillero. Vivo = creado y todavía sin ejecutar ni rechazar.
+create or replace function public.fn_hay_salida_viva(
+  p_position_id uuid,
+  p_item_id     uuid,
+  p_excluir     uuid default null
+)
+returns boolean
+language sql
+stable
+set search_path = public
+as $fn$
+  select exists (
+    select 1
+      from public.inventory_movements m
+     where m.position_id = p_position_id
+       and m.item_id     = p_item_id
+       and m.id is distinct from p_excluir
+       and m.status in ('PENDIENTE', 'APROBADO')
+       and m.executed_at is null
+       and (m.movement_type = 'SALIDA'
+            or (m.movement_type = 'AJUSTE' and m.direction < 0))
+  );
+$fn$;
+
+comment on function public.fn_hay_salida_viva is
+  'Si algún otro movimiento de salida sigue esperando sobre ese casillero. Evita sacarlo del picking cuando había más de un pedido en cola.';
+
+
+-- =============================================================================
+--  BLOQUE B — MARCAR EL CASILLERO DE UN MOVIMIENTO
+--
+--  En una función y no dentro del trigger porque la usan dos: el trigger de
+--  alta y el relleno del final, que le pasa los movimientos que ya estaban
+--  pendientes. Dos copias de esta lógica acabarían separándose.
+-- =============================================================================
+create or replace function public.fn_marcar_casillero(p_mov public.inventory_movements)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_delta integer;
+  v_asg   public.position_assignments;
+begin
+  if p_mov.position_id is null or p_mov.status <> 'PENDIENTE' or p_mov.executed_at is not null then
+    return 'SIN_CASILLERO';
+  end if;
+
+  v_delta := case p_mov.movement_type
+               when 'ENTRADA' then  1
+               when 'SALIDA'  then -1
+               else coalesce(p_mov.direction, 1)
+             end;
+
+  select * into v_asg
+    from public.position_assignments
+   where position_id = p_mov.position_id
+     and item_id     = p_mov.item_id
+     and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+   for update;
+
+  if v_delta > 0 then
+    -- Entrada: apartar el hueco. Si el casillero ya guarda este artículo no
+    -- hace falta —el sitio ya es suyo— y además el índice no admitiría una
+    -- segunda fila viva.
+    if v_asg.id is not null then
+      return 'YA_TENIA_SITIO';
+    end if;
+
+    insert into public.position_assignments
+      (position_id, item_id, quantity, status, assigned_by, movement_id, notes)
+    values
+      (p_mov.position_id, p_mov.item_id, p_mov.quantity, 'RESERVADA', p_mov.created_by, p_mov.id,
+       'Sitio apartado por el movimiento ' || p_mov.id::text);
+    return 'RESERVADA';
+  end if;
+
+  -- Salida: lo que hay pasa a estar comprometido. Si no hay nada ubicado ahí
+  -- no se marca nada, y al ejecutar fn_ejecutar_movimiento lo rechaza diciendo
+  -- cuántas cajas hay realmente.
+  if v_asg.id is null then
+    return 'NADA_UBICADO';
+  end if;
+  if v_asg.status <> 'OCUPADA' then
+    return 'YA_MARCADO';
+  end if;
+
+  update public.position_assignments
+     set status = 'EN_PICKING', movement_id = p_mov.id, updated_at = now()
+   where id = v_asg.id;
+  return 'EN_PICKING';
+end;
+$fn$;
+
+revoke execute on function public.fn_marcar_casillero(public.inventory_movements) from public, anon, authenticated;
+
+
+create or replace function public.fn_marcar_casillero_al_crear()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  perform public.fn_marcar_casillero(new);
+  return new;
+end;
+$fn$;
+
+-- Va como trigger y no dentro de una RPC porque el movimiento se crea con un
+-- INSERT directo desde el cliente (RLS lo permite, ver 03_rls.sql bloque E.8):
+-- puesto aquí, la marca aparece venga el INSERT de donde venga.
+drop trigger if exists trg_mov_marcar_casillero on public.inventory_movements;
+create trigger trg_mov_marcar_casillero
+  after insert on public.inventory_movements
+  for each row execute function public.fn_marcar_casillero_al_crear();
+
+
+-- =============================================================================
+--  BLOQUE C — AL RECHAZAR, DESHACER LA MARCA
+--
+--  Copia de la versión vigente (migración 02) con el bloque de la marca.
+-- =============================================================================
+create or replace function public.fn_rechazar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null,
+  p_motivo      text default null
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_mov public.inventory_movements;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.executed_at is not null then
+    raise exception 'No se puede rechazar un movimiento ya ejecutado. Usa una reversión.';
+  end if;
+  if v_mov.status = 'RECHAZADO' then
+    raise exception 'Este movimiento ya estaba rechazado.';
+  end if;
+
+  -- Si estaba aprobado, hay stock comprometido que hay que devolver.
+  if v_mov.status = 'APROBADO' and v_mov.inventory_id is not null then
+    if v_mov.movement_type = 'SALIDA' then
+      update public.inventory set qty_reserved = greatest(qty_reserved - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    elsif v_mov.movement_type = 'ENTRADA' then
+      update public.inventory set qty_incoming = greatest(qty_incoming - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    end if;
+  end if;
+
+  -- El hueco que se había apartado vuelve a estar libre. Se libera del todo y
+  -- no se baja a cero: una fila viva en cero seguiría ocupando el índice.
+  update public.position_assignments
+     set status = 'LIBERADA', quantity = 0, released_at = now(),
+         movement_id = null, updated_at = now()
+   where movement_id = v_mov.id
+     and status = 'RESERVADA';
+
+  -- Lo comprometido vuelve a ser stock normal, salvo que otro pedido siga
+  -- esperándolo.
+  update public.position_assignments
+     set status = 'OCUPADA', movement_id = null, updated_at = now()
+   where movement_id = v_mov.id
+     and status = 'EN_PICKING'
+     and not public.fn_hay_salida_viva(position_id, item_id, v_mov.id);
+
+  -- La que sigue comprometida por otro pedido deja de apuntar a este.
+  update public.position_assignments
+     set movement_id = null, updated_at = now()
+   where movement_id = v_mov.id;
+
+  update public.inventory_movements
+     set status = 'RECHAZADO', approved_at = now(), approved_by = p_user_id,
+         notes = concat_ws(' | ', notes, coalesce(p_motivo, 'Rechazado'))
+   where id = p_movement_id
+  returning * into v_mov;
+
+  return v_mov;   -- el stock nunca se tocó, por diseño
+end;
+$$;
+
+
+-- =============================================================================
+--  BLOQUE D — AL EJECUTAR, CONVERTIR LA MARCA
+--
+--  Copiada de la migración 20 con dos cambios: la reserva de una entrada se
+--  convierte en ocupación en vez de sumarse, y una salida saca el casillero
+--  del picking cuando ya no queda pedido encima.
+-- =============================================================================
+create or replace function public.fn_ejecutar_movimiento(
+  p_movement_id   uuid,
+  p_user_id       uuid    default null,
+  p_cantidad_real integer default null,   -- NULL = llegó/salió exactamente lo aprobado
+  p_quality       text    default 'BUENO'
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_mov     public.inventory_movements;
+  v_inv     public.inventory;
+  v_real    integer;
+  v_delta   integer;
+  v_before  integer;
+  v_pos     public.positions;
+  v_pos_wh  uuid;
+  v_asg     public.position_assignments;
+  v_ubicado integer;
+  v_donde   text;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.status <> 'APROBADO' then
+    raise exception 'Solo se puede ejecutar un movimiento aprobado (este está %).', lower(v_mov.status);
+  end if;
+  -- DOBLE EJECUCIÓN (E-06): dos operarios recibiendo la misma orden.
+  if v_mov.executed_at is not null then
+    raise exception 'Este movimiento ya fue ejecutado el % y no puede volver a ejecutarse.', v_mov.executed_at;
+  end if;
+
+  v_real := coalesce(p_cantidad_real, v_mov.quantity);
+  if v_real <= 0 then
+    raise exception 'La cantidad ejecutada debe ser mayor que cero.';
+  end if;
+
+  select * into v_inv from public.inventory where id = v_mov.inventory_id for update;
+  if not found then
+    raise exception 'El movimiento no tiene registro de inventario asociado.';
+  end if;
+
+  v_before := v_inv.quantity;
+
+  if v_mov.movement_type = 'ENTRADA' then
+    if p_quality = 'BUENO' then
+      update public.inventory
+         set qty_incoming = greatest(qty_incoming - v_mov.quantity, 0),
+             quantity     = quantity + v_real
+       where id = v_inv.id;
+      v_delta := v_real;
+    else
+      -- Dañada o en cuarentena: entra al almacén pero NO al stock vendible
+      -- (E-05), y por lo mismo tampoco a un estante de venta.
+      update public.inventory
+         set qty_incoming    = greatest(qty_incoming - v_mov.quantity, 0),
+             qty_damaged     = qty_damaged    + case when p_quality = 'DANADO'     then v_real else 0 end,
+             qty_quarantine  = qty_quarantine + case when p_quality = 'CUARENTENA' then v_real else 0 end
+       where id = v_inv.id;
+      v_delta := 0;
+    end if;
+
+  elsif v_mov.movement_type = 'SALIDA' then
+    if v_inv.quantity < v_real then
+      raise exception 'No se puede retirar %: solo hay % en stock.', v_real, v_inv.quantity;
+    end if;
+    -- Reserva y stock en la MISMA sentencia: evita que qty_reserved <= quantity
+    -- reviente a mitad.
+    update public.inventory
+       set qty_reserved = greatest(qty_reserved - v_mov.quantity, 0),
+           quantity     = quantity - v_real
+     where id = v_inv.id;
+    v_delta := -v_real;
+
+  else  -- AJUSTE: el signo lo da direction (permite corregir a la baja)
+    v_delta := v_real * v_mov.direction;
+    if v_inv.quantity + v_delta < 0 then
+      raise exception 'El ajuste dejaría el stock en negativo (hay %, se ajusta %).', v_inv.quantity, v_delta;
+    end if;
+    update public.inventory set quantity = quantity + v_delta where id = v_inv.id;
+  end if;
+
+  -- ---------------------------------------------------------------------------
+  -- LOS ESTANTES SIGUEN AL STOCK. v_delta ya es exactamente cuántas cajas
+  -- entran (+) o salen (-) de circulación. Con casillero, se suman o restan
+  -- ahí. Sin casillero, entrar deja las cajas en recepción; salir solo puede
+  -- tomar de lo que no está en ningún estante, porque si no los estantes
+  -- terminarían mostrando pares que ya no existen.
+  -- ---------------------------------------------------------------------------
+  if v_delta <> 0 and v_mov.position_id is not null then
+    select * into v_pos from public.positions where id = v_mov.position_id;
+    select warehouse_id into v_pos_wh from public.racks where id = v_pos.rack_id;
+    if v_pos_wh is distinct from v_inv.warehouse_id then
+      raise exception 'El casillero % está en otro almacén que el stock de este artículo.', v_pos.code;
+    end if;
+
+    select * into v_asg
+      from public.position_assignments
+     where position_id = v_mov.position_id
+       and item_id     = v_mov.item_id
+       and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+     for update;
+
+    if v_delta > 0 then
+      -- Los triggers de capacidad, modelo y nivel opinan acá: si el casillero
+      -- no admite estas cajas, la ejecución entera se revierte con el motivo.
+      if v_asg.id is null then
+        insert into public.position_assignments (position_id, item_id, quantity, status, assigned_by, notes)
+        values (v_mov.position_id, v_mov.item_id, v_delta, 'OCUPADA', p_user_id,
+                'Ubicada al ejecutar el movimiento ' || v_mov.id::text);
+
+      elsif v_asg.status = 'RESERVADA' and v_asg.movement_id = v_mov.id then
+        -- El hueco que este mismo movimiento aparto al crearse. Ahora las
+        -- cajas existen, asi que la reserva se convierte en ocupacion. Se PISA
+        -- la cantidad en vez de sumarla —lo reservado no eran cajas, era
+        -- sitio— y se usa v_delta, que es lo que de verdad llego y puede no
+        -- coincidir con lo que se habia pedido.
+        update public.position_assignments
+           set quantity = v_delta, status = 'OCUPADA',
+               movement_id = null, updated_at = now()
+         where id = v_asg.id;
+
+      else
+        update public.position_assignments
+           set quantity = quantity + v_delta, updated_at = now()
+         where id = v_asg.id;
+      end if;
+    else
+      if v_asg.id is null or v_asg.quantity < -v_delta then
+        raise exception 'En el casillero % hay % de este artículo y se quieren sacar %.',
+          v_pos.code, coalesce(v_asg.quantity, 0), -v_delta;
+      end if;
+      if v_asg.quantity = -v_delta then
+        update public.position_assignments
+           set quantity = 0, status = 'LIBERADA', released_at = now(), updated_at = now()
+         where id = v_asg.id;
+      else
+        update public.position_assignments
+           set quantity = quantity + v_delta,
+               -- Sale del picking cuando ya no queda ningun pedido vivo sobre
+               -- el casillero. No se compara con este movimiento: con dos
+               -- salidas encadenadas, la marca la dejo la primera y la segunda
+               -- nunca podria retirarla. Una marca puesta a mano (movement_id
+               -- nulo) no se toca: no la puso un movimiento.
+               status = case
+                 when v_asg.status = 'EN_PICKING'
+                  and v_asg.movement_id is not null
+                  and not public.fn_hay_salida_viva(v_mov.position_id, v_mov.item_id, v_mov.id)
+                 then 'OCUPADA' else v_asg.status end,
+               movement_id = case
+                 when public.fn_hay_salida_viva(v_mov.position_id, v_mov.item_id, v_mov.id)
+                 then v_asg.movement_id else null end,
+               updated_at = now()
+         where id = v_asg.id;
+      end if;
+    end if;
+
+  elsif v_delta < 0 then
+    select coalesce(sum(pa.quantity), 0) into v_ubicado
+      from public.position_assignments pa
+      join public.positions pos on pos.id = pa.position_id
+      join public.racks     r   on r.id   = pos.rack_id
+     where pa.item_id = v_mov.item_id
+       and r.warehouse_id = v_inv.warehouse_id
+       and pa.status in ('OCUPADA', 'EN_PICKING');
+
+    if v_before - v_ubicado < -v_delta then
+      select string_agg(pos.code || ' (' || pa.quantity || ')', ', ' order by pos.code)
+        into v_donde
+        from public.position_assignments pa
+        join public.positions pos on pos.id = pa.position_id
+        join public.racks     r   on r.id   = pos.rack_id
+       where pa.item_id = v_mov.item_id
+         and r.warehouse_id = v_inv.warehouse_id
+         and pa.status in ('OCUPADA', 'EN_PICKING');
+
+      raise exception 'Solo % de estos pares están fuera de los estantes y se quieren sacar % sin decir de qué casillero. Indica el casillero de origen: %.',
+        greatest(v_before - v_ubicado, 0), -v_delta, coalesce(v_donde, 'ninguno');
+    end if;
+  end if;
+
+  if v_delta <> 0 then
+    insert into public.stock_ledger (movement_id, item_id, warehouse_id, position_id,
+                                     qty_delta, qty_before, qty_after, executed_by)
+    values (v_mov.id, v_mov.item_id, v_inv.warehouse_id, v_mov.position_id,
+            v_delta, v_before, v_before + v_delta, p_user_id);
+  end if;
+
+  -- DISCREPANCIA (E-01/E-02/E-18): lo esperado no fue lo que pasó.
+  if v_real <> v_mov.quantity then
+    insert into public.discrepancies (movement_id, order_id, item_id, discrepancy_type,
+                                      expected_qty, actual_qty, qty_diff, detail, reported_by)
+    values (v_mov.id, v_mov.order_id, v_mov.item_id,
+            case when v_real < v_mov.quantity then 'FALTANTE' else 'SOBRANTE' end,
+            v_mov.quantity, v_real, v_real - v_mov.quantity,
+            'Diferencia detectada al ejecutar el movimiento.', p_user_id);
+
+    perform public.fn_emitir_alerta('DISCREPANCIA_RECEPCION', 'inventory_movements', v_mov.id,
+      'Diferencia entre lo esperado y lo ejecutado',
+      format('Esperado %s, real %s.', v_mov.quantity, v_real));
+  end if;
+
+  if p_quality <> 'BUENO' then
+    insert into public.discrepancies (movement_id, order_id, item_id, discrepancy_type,
+                                      expected_qty, actual_qty, qty_diff, detail, reported_by)
+    values (v_mov.id, v_mov.order_id, v_mov.item_id, 'DANADO',
+            v_mov.quantity, v_real, 0,
+            format('Mercadería recibida con estado %s.', p_quality), p_user_id);
+  end if;
+
+  update public.inventory_movements
+     set executed_at = now(), executed_by = p_user_id,
+         expected_quantity = v_mov.quantity,
+         quality_status = p_quality
+   where id = v_mov.id
+  returning * into v_mov;
+
+  return v_mov;
+end;
+$fn$;
+
+
+-- =============================================================================
+--  BLOQUE E — LOS MOVIMIENTOS QUE YA ESTABAN PENDIENTES
+--
+--  Sin esto, los pendientes de antes de la migración quedarían sin marca y la
+--  base contradiría la regla que acaba de establecerse.
+--
+--  Cada uno va en su propio savepoint: reservar ocupa capacidad, y una entrada
+--  a un casillero que hoy está lleno no puede reservar. Eso NO es motivo para
+--  abortar la migración entera, pero tampoco para callarlo — se cuentan y se
+--  listan los que no se pudieron, con su motivo.
+-- =============================================================================
+do $$
+declare
+  v_mov     public.inventory_movements;
+  v_res     text;
+  v_cuenta  jsonb := '{}'::jsonb;
+  v_fallos  integer := 0;
+  v_detalle text := '';
+begin
+  for v_mov in
+    select * from public.inventory_movements
+     where status = 'PENDIENTE'
+       and position_id is not null
+       and executed_at is null
+     order by created_at
+  loop
+    begin
+      v_res := public.fn_marcar_casillero(v_mov);
+      v_cuenta := jsonb_set(v_cuenta, array[v_res],
+                            to_jsonb(coalesce((v_cuenta ->> v_res)::integer, 0) + 1));
+    exception when others then
+      v_fallos  := v_fallos + 1;
+      v_detalle := v_detalle || format(E'\n    %s de %s: %s',
+                                       v_mov.movement_type, v_mov.quantity, sqlerrm);
+    end;
+  end loop;
+
+  raise notice 'Movimientos pendientes marcados: %', v_cuenta;
+  if v_fallos > 0 then
+    raise notice 'No se pudo marcar % (siguen pendientes y se pueden ejecutar igual):%', v_fallos, v_detalle;
+  end if;
+end;
+$$;
+
+
+-- Cómo queda el reparto de estados en los casilleros.
+do $$
+declare v_fila record;
+begin
+  for v_fila in
+    select status, count(*) as filas, sum(quantity) as cajas
+      from public.position_assignments
+     where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+     group by status order by status
+  loop
+    raise notice '%: % casilleros, % cajas', v_fila.status, v_fila.filas, v_fila.cajas;
+  end loop;
+end;
+$$;
+
+
+-- #############################################################################
+-- ##  30_sanear_movimientos_pendientes.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 30 — LOS MOVIMIENTOS PENDIENTES QUE APUNTAN A DONDE NO DEBEN
+--
+--  Al marcar los casilleros (migración 29) salieron a la luz 33 de los 38
+--  movimientos pendientes: no se les pudo poner la marca porque el casillero
+--  que llevan no sirve. No es un problema de la 29 — esos movimientos ya eran
+--  inejecutables, solo que el error habría aparecido al ejecutarlos:
+--
+--    · 18 ENTRADAS de calzado de adulto apuntando a un nivel infantil. Son
+--      datos sembrados antes de que existiera la regla de niveles (migración
+--      15), así que nunca fueron válidos con las reglas de hoy.
+--
+--    · 15 SALIDAS que dicen sacar de un casillero donde ese artículo no está.
+--
+--  Se corrige la INTENCIÓN, que es lo único que hay: el casillero de un
+--  movimiento pendiente es una propuesta, no un hecho. Nada de stock cambia.
+--
+--    · La entrada que no puede ir a ese casillero pasa a "recepción"
+--      (position_id NULL): entra igual y se ubica después, que es justamente
+--      para lo que existe esa opción.
+--
+--    · La salida se reapunta al casillero donde ese artículo sí tiene cajas
+--      (el que más tenga, en el mismo almacén). Si no está en ninguno, pasa
+--      también a recepción y saldrá del stock sin ubicar.
+--
+--  Requiere 01-29. Idempotente: al volver a correrla no encuentra nada que
+--  corregir.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+--  A. Entradas hacia un casillero que no las admite
+-- -----------------------------------------------------------------------------
+-- Se comprueban las tres reglas que aplican los triggers: el nivel según el
+-- público, que el casillero no sea de otro modelo, y que quepan.
+with malas as (
+  select m.id
+    from public.inventory_movements m
+    join public.inventory_items it  on it.id = m.item_id
+    join public.positions       pos on pos.id = m.position_id
+    left join lateral (
+      select coalesce(sum(pa.quantity), 0) as ocupado,
+             bool_or(oit.product_id <> it.product_id) as otro_modelo
+        from public.position_assignments pa
+        join public.inventory_items oit on oit.id = pa.item_id
+       where pa.position_id = pos.id
+         and pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+    ) oc on true
+   where m.status = 'PENDIENTE'
+     and m.executed_at is null
+     and m.position_id is not null
+     and (m.movement_type = 'ENTRADA'
+          or (m.movement_type = 'AJUSTE' and coalesce(m.direction, 1) > 0))
+     and (
+          (it.audience = 'NINO')   <> (pos.level <= public.fn_niveles_infantiles())
+       or coalesce(oc.otro_modelo, false)
+       or m.quantity > coalesce(pos.capacity_units, 0) - coalesce(oc.ocupado, 0)
+     )
+)
+update public.inventory_movements m
+   set position_id = null,
+       notes = concat_ws(' | ', m.notes,
+                         'Casillero retirado: no admitía este artículo. Entra a recepción y se ubica después.')
+  from malas
+ where m.id = malas.id;
+
+
+-- -----------------------------------------------------------------------------
+--  B. Salidas desde un casillero donde el artículo no está
+-- -----------------------------------------------------------------------------
+-- Se reapunta al casillero con más cajas de ese artículo dentro del mismo
+-- almacén. El almacén sale del registro de inventario del movimiento y, si
+-- todavía no tiene uno, del almacén del casillero que llevaba.
+with sin_cajas as (
+  select m.id, m.item_id,
+         coalesce(inv.warehouse_id, r.warehouse_id) as warehouse_id
+    from public.inventory_movements m
+    join public.positions pos on pos.id = m.position_id
+    join public.racks     r   on r.id   = pos.rack_id
+    left join public.inventory inv on inv.id = m.inventory_id
+   where m.status = 'PENDIENTE'
+     and m.executed_at is null
+     and m.position_id is not null
+     and (m.movement_type = 'SALIDA'
+          or (m.movement_type = 'AJUSTE' and coalesce(m.direction, 1) < 0))
+     and not exists (
+       select 1 from public.position_assignments pa
+        where pa.position_id = m.position_id
+          and pa.item_id     = m.item_id
+          and pa.status in ('OCUPADA', 'EN_PICKING')
+     )
+),
+mejor as (
+  select sc.id,
+         (select pa.position_id
+            from public.position_assignments pa
+            join public.positions pos2 on pos2.id = pa.position_id
+            join public.racks     r2   on r2.id   = pos2.rack_id
+           where pa.item_id = sc.item_id
+             and pa.status  = 'OCUPADA'
+             and r2.warehouse_id = sc.warehouse_id
+           order by pa.quantity desc, pos2.code
+           limit 1) as destino
+    from sin_cajas sc
+)
+update public.inventory_movements m
+   set position_id = mejor.destino,
+       notes = concat_ws(' | ', m.notes,
+                         case when mejor.destino is null
+                              then 'Casillero retirado: el artículo no está en ningún estante de este almacén.'
+                              else 'Casillero corregido: el artículo no estaba en el que traía.' end)
+  from mejor
+ where m.id = mejor.id;
+
+
+-- -----------------------------------------------------------------------------
+--  C. Ahora sí, marcar los que quedaron con un casillero válido
+-- -----------------------------------------------------------------------------
+do $$
+declare
+  v_mov    public.inventory_movements;
+  v_res    text;
+  v_cuenta jsonb := '{}'::jsonb;
+  v_fallos integer := 0;
+  v_det    text := '';
+begin
+  for v_mov in
+    select m.* from public.inventory_movements m
+     where m.status = 'PENDIENTE'
+       and m.executed_at is null
+       and m.position_id is not null
+       and not exists (select 1 from public.position_assignments pa where pa.movement_id = m.id)
+     order by m.created_at
+  loop
+    begin
+      v_res := public.fn_marcar_casillero(v_mov);
+      v_cuenta := jsonb_set(v_cuenta, array[v_res],
+                            to_jsonb(coalesce((v_cuenta ->> v_res)::integer, 0) + 1));
+    exception when others then
+      v_fallos := v_fallos + 1;
+      v_det := v_det || format(E'\n    %s de %s: %s', v_mov.movement_type, v_mov.quantity, sqlerrm);
+    end;
+  end loop;
+
+  raise notice 'Marcado tras sanear: %', v_cuenta;
+  if v_fallos > 0 then
+    raise notice 'Siguen sin marca % :%', v_fallos, v_det;
+  end if;
+end;
+$$;
+
+
+-- -----------------------------------------------------------------------------
+--  D. Cómo queda
+-- -----------------------------------------------------------------------------
+do $$
+declare v_f record;
+begin
+  for v_f in
+    select status, count(*) as filas, sum(quantity) as cajas
+      from public.position_assignments
+     where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+     group by status order by status
+  loop
+    raise notice 'Casilleros %: % filas, % cajas', v_f.status, v_f.filas, v_f.cajas;
+  end loop;
+
+  for v_f in
+    select movement_type,
+           count(*) filter (where position_id is not null) as con_casillero,
+           count(*) filter (where position_id is null)     as a_recepcion
+      from public.inventory_movements
+     where status = 'PENDIENTE' and executed_at is null
+     group by movement_type order by movement_type
+  loop
+    raise notice 'Pendientes %: % con casillero, % a recepción',
+      v_f.movement_type, v_f.con_casillero, v_f.a_recepcion;
+  end loop;
+end;
+$$;
+
+
+-- #############################################################################
+-- ##  31_sanear_movimientos_aprobados.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 31 — LO MISMO, PARA LOS MOVIMIENTOS YA APROBADOS
+--
+--  La migración 30 saneó los movimientos PENDIENTES, pero se dejó fuera los
+--  APROBADOS, que arrastran exactamente el mismo defecto de origen: 29 de los
+--  33 aprobados sin ejecutar apuntan a un casillero imposible (21 entradas de
+--  adulto hacia niveles infantiles, 8 salidas desde casilleros donde ese
+--  artículo no está). Pulsar "Ejecutar" en cualquiera de ellos falla.
+--
+--  Aprobado y pendiente son lo mismo a estos efectos: mientras executed_at sea
+--  NULL, el casillero es una intención y todavía se puede corregir. Por eso
+--  aquí el saneamiento se hace para los dos estados a la vez, y así vale
+--  también si mañana vuelve a hacer falta.
+--
+--  No se toca ni el stock ni qty_reserved/qty_incoming: lo que un movimiento
+--  aprobado tiene comprometido sigue comprometido igual, solo cambia dónde
+--  dice que va a dejar o sacar las cajas.
+--
+--  Requiere 01-30. Idempotente.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+--  A. Entradas hacia un casillero que no las admite -> a recepción
+-- -----------------------------------------------------------------------------
+with malas as (
+  select m.id
+    from public.inventory_movements m
+    join public.inventory_items it  on it.id = m.item_id
+    join public.positions       pos on pos.id = m.position_id
+    left join lateral (
+      select coalesce(sum(pa.quantity), 0) as ocupado,
+             bool_or(oit.product_id <> it.product_id) as otro_modelo
+        from public.position_assignments pa
+        join public.inventory_items oit on oit.id = pa.item_id
+       where pa.position_id = pos.id
+         and pa.status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+         and pa.movement_id is distinct from m.id   -- su propia reserva no estorba
+    ) oc on true
+   where m.status in ('PENDIENTE', 'APROBADO')
+     and m.executed_at is null
+     and m.position_id is not null
+     and (m.movement_type = 'ENTRADA'
+          or (m.movement_type = 'AJUSTE' and coalesce(m.direction, 1) > 0))
+     and (
+          (it.audience = 'NINO') <> (pos.level <= public.fn_niveles_infantiles())
+       or coalesce(oc.otro_modelo, false)
+       or m.quantity > coalesce(pos.capacity_units, 0) - coalesce(oc.ocupado, 0)
+     )
+)
+update public.inventory_movements m
+   set position_id = null,
+       notes = concat_ws(' | ', m.notes,
+                         'Casillero retirado: no admitía este artículo. Entra a recepción y se ubica después.')
+  from malas
+ where m.id = malas.id;
+
+
+-- -----------------------------------------------------------------------------
+--  B. Salidas desde un casillero sin ese artículo -> donde sí lo haya
+-- -----------------------------------------------------------------------------
+with sin_cajas as (
+  select m.id, m.item_id, m.quantity,
+         coalesce(inv.warehouse_id, r.warehouse_id) as warehouse_id
+    from public.inventory_movements m
+    join public.positions pos on pos.id = m.position_id
+    join public.racks     r   on r.id   = pos.rack_id
+    left join public.inventory inv on inv.id = m.inventory_id
+   where m.status in ('PENDIENTE', 'APROBADO')
+     and m.executed_at is null
+     and m.position_id is not null
+     and (m.movement_type = 'SALIDA'
+          or (m.movement_type = 'AJUSTE' and coalesce(m.direction, 1) < 0))
+     and not exists (
+       select 1 from public.position_assignments pa
+        where pa.position_id = m.position_id
+          and pa.item_id     = m.item_id
+          and pa.status in ('OCUPADA', 'EN_PICKING')
+          and pa.quantity   >= m.quantity
+     )
+),
+mejor as (
+  select sc.id,
+         (select pa.position_id
+            from public.position_assignments pa
+            join public.positions pos2 on pos2.id = pa.position_id
+            join public.racks     r2   on r2.id   = pos2.rack_id
+           where pa.item_id = sc.item_id
+             and pa.status in ('OCUPADA', 'EN_PICKING')
+             and r2.warehouse_id = sc.warehouse_id
+             and pa.quantity >= sc.quantity      -- que quepa la salida entera
+           order by pa.quantity desc, pos2.code
+           limit 1) as destino
+    from sin_cajas sc
+)
+update public.inventory_movements m
+   set position_id = mejor.destino,
+       notes = concat_ws(' | ', m.notes,
+                         case when mejor.destino is null
+                              then 'Casillero retirado: no hay un estante con tantas cajas de este artículo.'
+                              else 'Casillero corregido: el artículo no estaba en el que traía.' end)
+  from mejor
+ where m.id = mejor.id;
+
+
+-- -----------------------------------------------------------------------------
+--  C. La marca también vale para un movimiento aprobado
+-- -----------------------------------------------------------------------------
+-- Un aprobado sin ejecutar compromete el casillero igual que uno pendiente: la
+-- mercadería sigue sin llegar (entrada) o sin salir (salida). Limitar la marca
+-- a PENDIENTE dejaba sin señalar justo los que están más cerca de ejecutarse.
+create or replace function public.fn_marcar_casillero(p_mov public.inventory_movements)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_delta integer;
+  v_asg   public.position_assignments;
+begin
+  if p_mov.position_id is null
+     or p_mov.status not in ('PENDIENTE', 'APROBADO')
+     or p_mov.executed_at is not null then
+    return 'SIN_CASILLERO';
+  end if;
+
+  v_delta := case p_mov.movement_type
+               when 'ENTRADA' then  1
+               when 'SALIDA'  then -1
+               else coalesce(p_mov.direction, 1)
+             end;
+
+  select * into v_asg
+    from public.position_assignments
+   where position_id = p_mov.position_id
+     and item_id     = p_mov.item_id
+     and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+   for update;
+
+  if v_delta > 0 then
+    if v_asg.id is not null then
+      return 'YA_TENIA_SITIO';
+    end if;
+
+    insert into public.position_assignments
+      (position_id, item_id, quantity, status, assigned_by, movement_id, notes)
+    values
+      (p_mov.position_id, p_mov.item_id, p_mov.quantity, 'RESERVADA', p_mov.created_by, p_mov.id,
+       'Sitio apartado por el movimiento ' || p_mov.id::text);
+    return 'RESERVADA';
+  end if;
+
+  if v_asg.id is null then
+    return 'NADA_UBICADO';
+  end if;
+  if v_asg.status <> 'OCUPADA' then
+    return 'YA_MARCADO';
+  end if;
+
+  update public.position_assignments
+     set status = 'EN_PICKING', movement_id = p_mov.id, updated_at = now()
+   where id = v_asg.id;
+  return 'EN_PICKING';
+end;
+$fn$;
+
+revoke execute on function public.fn_marcar_casillero(public.inventory_movements) from public, anon, authenticated;
+
+
+-- -----------------------------------------------------------------------------
+--  D. Marcar todo lo que quedó con un casillero válido y aún sin marca
+-- -----------------------------------------------------------------------------
+do $$
+declare
+  v_mov    public.inventory_movements;
+  v_res    text;
+  v_cuenta jsonb := '{}'::jsonb;
+  v_fallos integer := 0;
+  v_det    text := '';
+begin
+  for v_mov in
+    select m.* from public.inventory_movements m
+     where m.status in ('PENDIENTE', 'APROBADO')
+       and m.executed_at is null
+       and m.position_id is not null
+       and not exists (select 1 from public.position_assignments pa where pa.movement_id = m.id)
+     order by m.created_at
+  loop
+    begin
+      v_res := public.fn_marcar_casillero(v_mov);
+      v_cuenta := jsonb_set(v_cuenta, array[v_res],
+                            to_jsonb(coalesce((v_cuenta ->> v_res)::integer, 0) + 1));
+    exception when others then
+      v_fallos := v_fallos + 1;
+      v_det := v_det || format(E'\n    %s de %s: %s', v_mov.movement_type, v_mov.quantity, sqlerrm);
+    end;
+  end loop;
+
+  raise notice 'Marcado: %', v_cuenta;
+  if v_fallos > 0 then
+    raise notice 'Sin marca % :%', v_fallos, v_det;
+  end if;
+end;
+$$;
+
+
+-- -----------------------------------------------------------------------------
+--  E. Cuántos quedan ejecutables
+-- -----------------------------------------------------------------------------
+do $$
+declare v_f record;
+begin
+  for v_f in
+    select status,
+           count(*)                                        as total,
+           count(*) filter (where position_id is null)     as a_recepcion,
+           count(*) filter (where position_id is not null) as con_casillero
+      from public.inventory_movements
+     where status in ('PENDIENTE', 'APROBADO') and executed_at is null
+     group by status order by status
+  loop
+    raise notice '%: % sin ejecutar (% con casillero, % a recepción)',
+      v_f.status, v_f.total, v_f.con_casillero, v_f.a_recepcion;
+  end loop;
+
+  for v_f in
+    select status, count(*) as filas, sum(quantity) as cajas
+      from public.position_assignments
+     where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+     group by status order by status
+  loop
+    raise notice 'Casilleros %: % filas, % cajas', v_f.status, v_f.filas, v_f.cajas;
+  end loop;
+end;
+$$;
+
+
+-- #############################################################################
+-- ##  32_retirar_el_movimiento_propio.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 32 — RETIRAR UN MOVIMIENTO PROPIO
+--
+--  Probando el flujo con el supervisor apareció una asimetría fea:
+--
+--    · Aprobar el propio movimiento responde con un mensaje claro:
+--      "No puedes aprobar un movimiento que tú mismo creaste."
+--    · Rechazarlo suelta el constraint en crudo:
+--      'new row for relation "inventory_movements" violates check constraint
+--       "ck_mov_segregacion"'.
+--
+--  Y detrás del mensaje feo había una pregunta de fondo: ¿debe uno poder
+--  retirar lo que pidió por error? Obligar a pedirle a otro que rechace tu
+--  propia errata es rígido y no protege de nada — quien lo creó todavía no ha
+--  obtenido ninguna autorización, así que retirarlo no salta ningún control.
+--
+--  Lo que sí es una decisión de autorización es rechazar algo que YA está
+--  aprobado: ahí hay un permiso concedido de por medio y quitarlo le
+--  corresponde a otra persona.
+--
+--  Queda entonces:
+--
+--    PENDIENTE + lo retira quien lo creó  -> se permite, como retirada.
+--                                            approved_by queda NULL (nadie
+--                                            autorizó nada) y la nota lo dice.
+--    APROBADO  + lo rechaza quien lo creó -> se niega, con mensaje claro.
+--
+--  El constraint ck_mov_segregacion no se toca: sigue exigiendo
+--  approved_by <> created_by, y la retirada pasa justamente porque no escribe
+--  approved_by.
+--
+--  Requiere 01-31. Idempotente.
+-- =============================================================================
+
+create or replace function public.fn_rechazar_movimiento(
+  p_movement_id uuid,
+  p_user_id     uuid default null,
+  p_motivo      text default null
+)
+returns public.inventory_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_mov     public.inventory_movements;
+  v_propio  boolean;
+begin
+  select * into v_mov from public.inventory_movements where id = p_movement_id for update;
+  if not found then
+    raise exception 'El movimiento no existe.';
+  end if;
+  if v_mov.executed_at is not null then
+    raise exception 'No se puede rechazar un movimiento ya ejecutado. Usa una reversión.';
+  end if;
+  if v_mov.status = 'RECHAZADO' then
+    raise exception 'Este movimiento ya estaba rechazado.';
+  end if;
+
+  v_propio := p_user_id is not null and v_mov.created_by = p_user_id;
+
+  -- Rechazar algo ya autorizado es revocar el permiso de otro: no es tuyo.
+  if v_propio and v_mov.status = 'APROBADO' then
+    raise exception 'Este movimiento ya fue autorizado por otra persona: no puedes rechazarlo tú, que lo creaste. Pídeselo a un supervisor.';
+  end if;
+
+  -- Si estaba aprobado, hay stock comprometido que hay que devolver.
+  if v_mov.status = 'APROBADO' and v_mov.inventory_id is not null then
+    if v_mov.movement_type = 'SALIDA' then
+      update public.inventory set qty_reserved = greatest(qty_reserved - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    elsif v_mov.movement_type = 'ENTRADA' then
+      update public.inventory set qty_incoming = greatest(qty_incoming - v_mov.quantity, 0)
+       where id = v_mov.inventory_id;
+    end if;
+  end if;
+
+  -- El hueco apartado vuelve a estar libre.
+  update public.position_assignments
+     set status = 'LIBERADA', quantity = 0, released_at = now(),
+         movement_id = null, updated_at = now()
+   where movement_id = v_mov.id
+     and status = 'RESERVADA';
+
+  -- Lo comprometido vuelve a ser stock normal, salvo que otro pedido siga
+  -- esperándolo.
+  update public.position_assignments
+     set status = 'OCUPADA', movement_id = null, updated_at = now()
+   where movement_id = v_mov.id
+     and status = 'EN_PICKING'
+     and not public.fn_hay_salida_viva(position_id, item_id, v_mov.id);
+
+  update public.position_assignments
+     set movement_id = null, updated_at = now()
+   where movement_id = v_mov.id;
+
+  -- La diferencia está en approved_by. Una retirada no la autoriza nadie, así
+  -- que se queda en NULL: es lo que distingue "me equivoqué y lo quito" de
+  -- "otra persona lo revisó y dijo que no", y de paso es lo que hace que
+  -- ck_mov_segregacion la acepte.
+  update public.inventory_movements
+     set status      = 'RECHAZADO',
+         approved_at = now(),
+         approved_by = case when v_propio then null else p_user_id end,
+         notes = concat_ws(' | ', notes,
+                           case when v_propio
+                                then concat_ws(': ', 'Retirado por quien lo creó', p_motivo)
+                                else coalesce(p_motivo, 'Rechazado') end)
+   where id = p_movement_id
+  returning * into v_mov;
+
+  return v_mov;   -- el stock nunca se tocó, por diseño
+end;
+$$;
+
+comment on function public.fn_rechazar_movimiento is
+  'Rechaza un movimiento no ejecutado. Si lo retira quien lo creó y sigue pendiente, se acepta como retirada y approved_by queda NULL; si ya estaba aprobado, tiene que rechazarlo otra persona.';
+
+
+-- #############################################################################
+-- ##  33_stock_sin_los_borrados.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 33 — v_stock_actual DEJA FUERA LO QUE ESTÁ EN LA PAPELERA
+--
+--  La vista se escribió en la migración 01. El borrado lógico (`deleted_at`)
+--  llegó en la 02, y la vista nunca se actualizó: sigue devolviendo los
+--  artículos eliminados, con cantidad 0 y estado SIN_STOCK.
+--
+--  Hoy no se nota en pantalla porque el dashboard lee CatalogoAPI
+--  .listarArticulos(), que sí filtra. Pero v_stock_actual es la vista que
+--  cualquiera consultaría para preguntar "¿cuánto stock hay?", y responder con
+--  filas de artículos que ya no existen es sencillamente incorrecto.
+--
+--  Se filtra por los dos lados: el artículo y su modelo. Borrar un producto
+--  entero también debe sacar sus tallas de la vista.
+--
+--  create or replace view solo permite añadir columnas al final, no quitarlas
+--  ni reordenarlas: aquí solo se agrega un WHERE, así que la firma no cambia.
+--
+--  Requiere 01-32. Idempotente.
+-- =============================================================================
+
+create or replace view public.v_stock_actual as
+select
+  inv.id                            as inventory_id,
+  inv.item_id,
+  it.sku,
+  p.name                            as producto,
+  it.size_label                     as talla,
+  w.name                            as almacen,
+  inv.quantity,
+  inv.qty_reserved,
+  inv.qty_incoming,
+  (inv.quantity - inv.qty_reserved) as disponible,
+  inv.min_stock,
+  inv.max_stock,
+  case
+    when inv.quantity = 0                   then 'SIN_STOCK'
+    when inv.quantity <= inv.min_stock      then 'BAJO_MINIMO'
+    when inv.max_stock is not null
+         and inv.quantity > inv.max_stock   then 'SOBRE_MAXIMO'
+    else 'OK'
+  end                               as estado_stock,
+  inv.updated_at
+from public.inventory inv
+join public.inventory_items it on it.id = inv.item_id
+join public.products        p  on p.id  = it.product_id
+join public.warehouses      w  on w.id  = inv.warehouse_id
+where it.deleted_at is null
+  and p.deleted_at is null;
+
+alter view public.v_stock_actual set (security_invoker = on);
+
+comment on view public.v_stock_actual is
+  'Stock por artículo y almacén, con su estado. Excluye lo que está en la papelera (inventory_items.deleted_at / products.deleted_at).';
+
+
+do $$
+declare
+  v_vista   integer;
+  v_vivos   integer;
+begin
+  select count(*) into v_vista from public.v_stock_actual;
+  select count(*) into v_vivos
+    from public.inventory inv
+    join public.inventory_items it on it.id = inv.item_id
+    join public.products        p  on p.id  = it.product_id
+   where it.deleted_at is null and p.deleted_at is null;
+
+  raise notice 'v_stock_actual: % filas (registros de inventario vivos: %)', v_vista, v_vivos;
+end;
+$$;
+
+
+-- #############################################################################
+-- ##  34_el_estado_lo_ponen_los_movimientos.sql
+-- #############################################################################
+
+-- =============================================================================
+--  MIGRACIÓN 34 — UBICAR A MANO YA NO ELIGE EL ESTADO
+--
+--  Hasta la migración 29, RESERVADA y EN_PICKING solo se conseguían a mano
+--  desde el modal de ubicar: eran las únicas dos formas de marcar un casillero.
+--  Desde la 29 los pone el movimiento, y quedan atados a él por movement_id.
+--
+--  Eso convierte la opción manual en una trampa: una marca sin movement_id no
+--  la puede deshacer nadie automáticamente. fn_ejecutar_movimiento y
+--  fn_rechazar_movimiento solo devuelven a OCUPADA lo que tiene movimiento
+--  detrás —y a propósito, para no pisar una decisión de una persona—, así que
+--  un RESERVADA puesto a mano se queda ocupando capacidad para siempre, y un
+--  EN_PICKING manual deja cajas marcadas como comprometidas sin que ningún
+--  pedido las libere.
+--
+--  A partir de aquí ubicar_en_casillero solo acepta OCUPADA: "estas cajas
+--  están físicamente aquí". Apartar sitio se hace creando la ENTRADA, y
+--  comprometer mercadería, creando la SALIDA.
+--
+--  Las funciones internas que mueven asignaciones (reubicar_asignacion,
+--  fn_colocar) NO se tocan: conservan el estado que la asignación ya tenía,
+--  que es justamente lo que debe pasar al mover de sitio algo comprometido.
+--
+--  Requiere 01-33. Idempotente.
+-- =============================================================================
+
+create or replace function public.ubicar_en_casillero(
+  p_position_id uuid,
+  p_item_id     uuid,
+  p_quantity    integer,
+  p_status      text default 'OCUPADA',
+  p_notes       text default null
+)
+returns public.position_assignments
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_asg     public.position_assignments;
+  v_wh      uuid;
+  v_codigo  text;
+  v_stock   integer;
+  v_ubicado integer;
+begin
+  perform public.fn_exigir_rol('OPERARIO', 'SUPERVISOR', 'JEFE');
+
+  -- El estado ya no se elige. Se sigue aceptando el parámetro para no romper
+  -- a quien llame con la firma vieja, pero solo si pide OCUPADA.
+  if coalesce(p_status, 'OCUPADA') <> 'OCUPADA' then
+    raise exception
+      'Ubicar a mano solo registra mercadería que ya está en el estante. Para apartar sitio crea una ENTRADA, y para comprometer cajas, una SALIDA: el casillero se marca solo.'
+      using errcode = 'check_violation';
+  end if;
+
+  if p_quantity is null or p_quantity <= 0 then
+    raise exception 'La cantidad debe ser mayor que cero.';
+  end if;
+
+  select r.warehouse_id, pos.code into v_wh, v_codigo
+    from public.positions pos
+    join public.racks r on r.id = pos.rack_id
+   where pos.id = p_position_id;
+  if v_wh is null then
+    raise exception 'Ese casillero no existe.';
+  end if;
+
+  -- Siempre son cajas físicas, así que siempre se mide contra el stock.
+  select quantity into v_stock
+    from public.inventory
+   where item_id = p_item_id and warehouse_id = v_wh;
+  if v_stock is null then
+    raise exception 'Este artículo no tiene stock registrado en el almacén del casillero %.', v_codigo;
+  end if;
+
+  select coalesce(sum(pa.quantity), 0) into v_ubicado
+    from public.position_assignments pa
+    join public.positions pos on pos.id = pa.position_id
+    join public.racks     r   on r.id   = pos.rack_id
+   where pa.item_id = p_item_id
+     and r.warehouse_id = v_wh
+     and pa.status in ('OCUPADA', 'EN_PICKING');
+
+  if v_ubicado + p_quantity > v_stock then
+    raise exception 'Hay % pares en stock y % ya están en estantes: quedan % por ubicar y se intenta ubicar %.',
+      v_stock, v_ubicado, greatest(v_stock - v_ubicado, 0), p_quantity;
+  end if;
+
+  select * into v_asg
+    from public.position_assignments
+   where position_id = p_position_id
+     and item_id     = p_item_id
+     and status in ('RESERVADA', 'OCUPADA', 'EN_PICKING')
+   for update;
+
+  if v_asg.id is null then
+    insert into public.position_assignments (position_id, item_id, quantity, status, assigned_by, notes)
+    values (p_position_id, p_item_id, p_quantity, 'OCUPADA', public.actor_actual(), p_notes)
+    returning * into v_asg;
+  else
+    -- Si el casillero estaba reservado o comprometido por un movimiento, las
+    -- cajas se suman sin tocar esa marca: quien la puso la resolverá.
+    update public.position_assignments
+       set quantity = quantity + p_quantity,
+           updated_at = now(),
+           notes = coalesce(p_notes, notes)
+     where id = v_asg.id
+    returning * into v_asg;
+  end if;
+
+  return v_asg;
+end;
+$fn$;
+
+grant execute on function public.ubicar_en_casillero(uuid, uuid, integer, text, text) to authenticated;
+
+comment on function public.ubicar_en_casillero is
+  'Registra cajas que ya están físicamente en un casillero (siempre OCUPADA). Reservar o comprometer no se hace aquí: lo marca el movimiento.';

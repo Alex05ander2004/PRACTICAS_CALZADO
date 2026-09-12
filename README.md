@@ -4,6 +4,9 @@ Aplicación web de gestión de inventario para un almacén de calzado, construid
 sobre **Supabase** (PostgreSQL) con un frontend en **HTML + CSS + JavaScript sin
 frameworks**.
 
+**Repositorio:** https://github.com/Alex05ander2004/PRACTICAS_CALZADO
+**Puesta en marcha:** [`INSTALACION.md`](INSTALACION.md) — cuatro pasos, unos veinte minutos.
+
 El punto de partida fue el enunciado de tres tablas (`inventory`,
 `inventory_items`, `inventory_movements`). El resultado es un almacén que se
 puede operar de verdad: sabe **cuánto** hay, **dónde** está cada caja, **quién**

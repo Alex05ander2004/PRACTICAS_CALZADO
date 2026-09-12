@@ -230,7 +230,11 @@ begin
     join public.racks           r   on r.warehouse_id = w.id and r.code = 'RACK-07'
     join public.positions       pos on pos.rack_id = r.id
                                     and pos.code = left(t.wh_code, 1) || '-07-' || lpad(t.n::text, 2, '0')
-  on conflict (position_id) where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING') do nothing;
+  -- El indice cambio en la migracion 20: antes era una asignacion viva por
+  -- casillero (position_id) y ahora es una por casillero y talla
+  -- (position_id, item_id), porque un casillero guarda un modelo con varias
+  -- tallas. Con la clausula vieja el seed falla al no encontrar indice.
+  on conflict (position_id, item_id) where status in ('RESERVADA', 'OCUPADA', 'EN_PICKING') do nothing;
 
   -- Movimiento histórico. Fechas RELATIVAS a hoy (current_date - n) para que
   -- la demo se vea "reciente" sin importar qué día se corra este script.
