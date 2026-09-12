@@ -1436,7 +1436,9 @@ function celdaFrente(c, anchoPx) {
   modelo.textContent = c.tallas.length ? (c.tallas[0].model_code ?? c.tallas[0].sku) : '';
   const tallas = document.createElement('span');
   tallas.className = 'frente-celda-tallas';
-  tallas.textContent = c.tallas.map((t) => t.talla).filter(Boolean).join(' ');
+  // Con "T" delante: en un casillero de 15 cm el número solo no se distingue
+  // de una cantidad. El detalle completo va en el title.
+  tallas.textContent = c.tallas.map((t) => (t.talla ? `T${t.talla}` : '')).filter(Boolean).join(' ');
   const barra = document.createElement('span');
   barra.className = 'frente-barra';
   const relleno = document.createElement('span');
@@ -1445,7 +1447,7 @@ function celdaFrente(c, anchoPx) {
   celda.append(modelo, tallas, barra);
 
   const detalle = c.tallas.length
-    ? `${c.tallas[0].producto}: ${c.tallas.map((t) => `talla ${t.talla ?? '?'} (${t.unidades})`).join(', ')}`
+    ? `${c.tallas[0].producto}: ${c.tallas.map((t) => `talla ${t.talla ?? '?'} · ${t.unidades} pares`).join(', ')}`
     : 'Libre';
   celda.title = `${c.posicion} — ${detalle} — ${hay} de ${caben} cajas`;
   celda.setAttribute('aria-label', celda.title);

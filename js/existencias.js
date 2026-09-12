@@ -91,7 +91,11 @@ function filaModelo(modelo) {
   const tallas = document.createElement('span');
   tallas.className = 'exis-tallas';
   for (const [talla, pares] of [...modelo.tallas].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }))) {
-    tallas.appendChild(dato(`${talla}×${pares}`, 'exis-talla'));
+    // "talla 40 · 26" y no "40×26": el segundo número necesita que el primero
+    // se lea como talla, o parecen dos medidas.
+    const etiqueta = dato(`talla ${talla} · ${pares}`, 'exis-talla');
+    etiqueta.title = `${pares} pares de la talla ${talla}`;
+    tallas.appendChild(etiqueta);
   }
   fila.appendChild(tallas);
 
@@ -117,12 +121,24 @@ function renderExistencias() {
   let racks = 0;
   let pares = 0;
 
-  for (const alm of [...almacenes.values()].sort((a, b) => a.code.localeCompare(b.code))) {
+  // Se recorren los almacenes que existen, no solo los que tienen algo: uno
+  // vacío tiene que decir que está vacío, no desaparecer y dejar la duda.
+  const ordenados = [...layoutAlmacenes].sort((a, b) => a.code.localeCompare(b.code));
+  for (const { code } of ordenados) {
+    const alm = almacenes.get(code) ?? { code, nombre: nombreDeAlmacen(code), racks: new Map(), modelos: new Set(), pares: 0 };
     const conStock = [...alm.racks.values()]
       .map((rack) => ({ rack, lista: [...rack.modelos.values()].filter(coincideExistencia).sort((a, b) => b.pares - a.pares) }))
       .filter(({ lista }) => lista.length > 0)
       .sort((a, b) => a.rack.code.localeCompare(b.rack.code, undefined, { numeric: true }));
-    if (conStock.length === 0) continue;
+    if (conStock.length === 0) {
+      // Buscando, un almacén sin coincidencias solo estorba.
+      if (filtroExistencias) continue;
+      const vacio = document.createElement('p');
+      vacio.className = 'exis-almacen-vacio';
+      vacio.append(dato(alm.code, 'exis-codigo'), dato(alm.nombre, 'exis-nombre'), dato('sin nada ubicado'));
+      cont.appendChild(vacio);
+      continue;
+    }
 
     const bloque = document.createElement('details');
     bloque.className = 'exis-almacen';

@@ -1288,6 +1288,17 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 
 .exis-lista { display: flex; flex-direction: column; gap: 10px; }
 .exis-vacio { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.exis-almacen-vacio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+}
 
 .exis-almacen {
   background: var(--surface);
