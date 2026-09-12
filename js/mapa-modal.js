@@ -82,6 +82,7 @@ function aplicarFiltroMapa() {
 function inicializarMapa(mapa) {
   todoElMapa = mapa;
   aplicarFiltroMapa();
+  renderExistencias();
   // No se espera: la revisión es informativa y el mapa no debe quedarse en
   // blanco mientras llega.
   refrescarRevision();

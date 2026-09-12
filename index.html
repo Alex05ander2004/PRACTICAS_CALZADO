@@ -59,6 +59,7 @@
         <button type="button" class="tab-btn" role="tab" id="tabInventario" aria-controls="seccionTabla" aria-selected="true">Inventario</button>
         <button type="button" class="tab-btn" role="tab" id="tabMovimientos" aria-controls="seccionMovimientos" aria-selected="false" tabindex="-1">Movimientos</button>
         <button type="button" class="tab-btn" role="tab" id="tabMapa" aria-controls="seccionMapa" aria-selected="false" tabindex="-1">Mapa del almacén</button>
+        <button type="button" class="tab-btn" role="tab" id="tabExistencias" aria-controls="seccionExistencias" aria-selected="false" tabindex="-1">Existencias</button>
       </nav>
 
       <section id="seccionTabla" role="tabpanel" aria-labelledby="tabInventario">
@@ -286,6 +287,24 @@
             <p class="panel-contenido-ayuda">El ancho de cada casillero es proporcional al real. Clic en uno ocupado para ver sus tallas.</p>
           </aside>
         </div>
+      </section>
+
+      <!-- El plano dice cómo está distribuido el almacén; esto dice qué guarda
+           cada rack y dónde está cada modelo, con sus tallas sumadas aunque
+           estén repartidas en varios casilleros. -->
+      <section id="seccionExistencias" role="tabpanel" aria-labelledby="tabExistencias" hidden>
+        <div class="section-header">
+          <h2 class="section-titulo">Existencias por ubicación</h2>
+        </div>
+        <div class="filtros">
+          <label class="exis-buscador">
+            <span class="sr-only">Buscar por modelo, SKU, talla o casillero</span>
+            <input id="buscarExistencias" type="search" placeholder="Buscar modelo, SKU, talla o casillero…" />
+          </label>
+          <button type="button" id="btnLimpiarExistencias" class="btn-secundario btn-chico">Limpiar</button>
+        </div>
+        <p id="contadorExistencias" class="contador-resultados" role="status" aria-live="polite"></p>
+        <div id="listaExistencias" class="exis-lista"></div>
       </section>
     </main>
   </div>
@@ -701,5 +720,6 @@
   <script src="js/movimiento-modal.js"></script>
   <script src="js/mapa-modal.js"></script>
   <script src="js/plano-editor.js"></script>
+  <script src="js/existencias.js"></script>
 </body>
 </html>

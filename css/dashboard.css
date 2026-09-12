@@ -1259,3 +1259,95 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 .revision-grupo-titulo { margin: 0; font-size: 13px; font-weight: 600; }
 .revision-grupo-ayuda { margin: 2px 0 8px; font-size: 11.5px; color: var(--muted); max-width: 70ch; }
 .revision-acciones { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+
+/* ============================================================================
+   EXISTENCIAS POR UBICACIÓN: el inventario del plano, en lista
+   ========================================================================= */
+/* Visible solo para lectores de pantalla: la etiqueta del buscador, que en
+   pantalla ya se entiende por el placeholder. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.exis-buscador { flex: 1 1 280px; display: block; }
+.exis-buscador input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+}
+.exis-buscador input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.exis-lista { display: flex; flex-direction: column; gap: 10px; }
+.exis-vacio { color: var(--muted); font-size: 13px; margin: 4px 0; }
+
+.exis-almacen {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.exis-almacen > summary,
+.exis-rack > summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+.exis-almacen > summary { font-size: 14px; }
+.exis-rack {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.exis-rack > summary { font-size: 13px; }
+
+.exis-codigo { font-family: "IBM Plex Mono", monospace; font-weight: 500; }
+.exis-nombre { font-weight: 500; }
+.exis-datos { font-size: 12px; color: var(--muted); }
+
+.exis-modelos { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 2px; }
+.exis-modelo {
+  display: grid;
+  grid-template-columns: 88px minmax(140px, 1fr) auto 92px;
+  gap: 2px 12px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.exis-modelo:nth-child(odd) { background: var(--surface-2); }
+.exis-modelo-codigo { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+.exis-modelo-nombre { font-size: 13px; }
+.exis-pares { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; text-align: right; }
+
+.exis-tallas { display: flex; flex-wrap: wrap; gap: 4px; }
+.exis-talla {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+/* Dónde está, en su propia línea: es la referencia para ir a buscarlo, no lo
+   primero que se lee. */
+.exis-donde {
+  grid-column: 1 / -1;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .exis-modelo { grid-template-columns: 1fr auto; }
+  .exis-tallas { grid-column: 1 / -1; }
+}
