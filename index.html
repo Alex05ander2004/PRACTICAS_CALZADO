@@ -197,14 +197,6 @@
           <div id="listaRevision" class="revision-grupos"></div>
         </details>
 
-        <div class="mapa-leyenda">
-          <span class="mapa-leyenda-item"><span class="mapa-swatch libre"></span>Libre</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch ocupada"></span>Ocupada</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch reservada"></span>Reservada</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch en_picking"></span>En picking</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch infantil-marca"></span>Niveles 1-2 · infantil</span>
-          <span class="mapa-leyenda-item"><span class="mapa-swatch sobrecargado"></span>Sobrecargado</span>
-        </div>
 
         <div class="plano-controles">
           <button type="button" id="btnModoEdicion" class="btn-secundario btn-chico" aria-pressed="false">Editar plano</button>
@@ -262,7 +254,7 @@
           <button type="button" id="btnAplicarNivelesRack" class="btn-secundario btn-chico" title="Aplica los niveles y ajusta los casilleros de cada nivel al tamaño de un modelo">Aplicar niveles y casilleros</button>
           <button type="button" id="btnRotarRack" class="btn-secundario btn-chico">Girar 90°</button>
           <button type="button" id="btnEliminarRack" class="btn-peligro btn-chico">Eliminar</button>
-          <button type="button" id="btnDeseleccionarRack" class="btn-accion">Cerrar</button>
+          <button type="button" id="btnDeseleccionarRack" class="btn-secundario btn-chico">Cerrar</button>
           <span id="panelRackCapacidad" class="panel-rack-nota" role="status" aria-live="polite"></span>
         </div>
 
@@ -284,6 +276,13 @@
               <button type="button" id="btnCerrarContenidoRack" class="btn-cerrar" aria-label="Cerrar">&times;</button>
             </div>
             <div id="contenidoRackFrente" class="frente-rack"></div>
+            <div class="mapa-leyenda">
+              <span class="mapa-leyenda-item"><span class="mapa-swatch libre"></span>Libre</span>
+              <span class="mapa-leyenda-item"><span class="mapa-swatch ocupada"></span>Ocupada</span>
+              <span class="mapa-leyenda-item"><span class="mapa-swatch reservada"></span>Reservada</span>
+              <span class="mapa-leyenda-item"><span class="mapa-swatch en_picking"></span>En picking</span>
+              <span class="mapa-leyenda-item"><span class="mapa-swatch sobrecargado"></span>Sobrecargado</span>
+            </div>
             <p class="panel-contenido-ayuda">El ancho de cada casillero es proporcional al real. Clic en uno ocupado para ver sus tallas.</p>
           </aside>
         </div>
