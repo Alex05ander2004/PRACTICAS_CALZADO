@@ -585,14 +585,23 @@
         <div id="listaUbicacionActual" class="lista-ubicacion-actual"></div>
       </div>
 
-      <div class="campo">
-        <label for="campoUbicAlmacen">Almacén</label>
-        <select id="campoUbicAlmacen"></select>
+      <div class="fila-2">
+        <div class="campo">
+          <label for="campoUbicAlmacen">Almacén</label>
+          <select id="campoUbicAlmacen"></select>
+        </div>
+        <div class="campo">
+          <label for="campoUbicRack">Rack</label>
+          <select id="campoUbicRack"></select>
+        </div>
       </div>
+
+      <p id="ubicPendiente" class="ubic-pendiente" role="status"></p>
 
       <div class="campo">
         <label for="campoUbicPosicion">Casillero</label>
         <select id="campoUbicPosicion" required></select>
+        <p id="ayudaUbicPosicion" class="campo-ayuda"></p>
       </div>
 
       <div class="fila-2">

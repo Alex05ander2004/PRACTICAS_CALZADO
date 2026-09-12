@@ -9,12 +9,13 @@ const esNivelInfantil = (nivel) => nivel <= NIVELES_INFANTILES;
 // del CASO.txt que quedó solo en el esquema — mapa de racks/posiciones,
 // evitar doble ocupación, reservar espacio para INBOUND, preparar OUTBOUND.
 //
-// A propósito NO filtra de antemano qué posiciones "deberían" aceptar un
-// artículo según su público (niño/adulto): se muestran todas las libres del
-// almacén elegido, y si se intenta una que no corresponde, el trigger
-// trg_assign_publico_nivel de la base la rechaza y el error se ve tal cual en
-// el modal. Es la forma honesta de demostrar que la regla la aplica la base
-// de datos, no una lista precocinada en el cliente.
+// El selector de casillero sí descarta los niveles que el público del artículo
+// no admite. Antes los mostraba a propósito, para que se viera que la regla la
+// aplica la base; pero eso mezclaba dos cosas distintas. Quién manda sigue
+// siendo la base —el trigger trg_assign_publico_nivel rechaza igual lo que
+// llegue por cualquier otra vía, y su error se muestra tal cual—; lo que no
+// tiene sentido es que el formulario ofrezca mil opciones sabiendo que un
+// tercio va a fallar. Filtrar aquí es comodidad; la regla no vive aquí.
 
 let todoElMapa = [];
 
@@ -144,22 +145,91 @@ let articuloAUbicar = null;
 // migración 20). Primero los que ya tienen el modelo, para juntar las tallas.
 // A propósito NO se filtra por nivel: si se elige uno que no corresponde al
 // público del artículo, lo rechaza el trigger de la base — ver arriba.
-function casillerosDisponiblesPara(almacenCode, articulo) {
+// El público es del artículo desde la migración 27, así que se lee de ahí y no
+// del modelo: un modelo puede tener tallas de niño y de adulto, y cada una va a
+// su altura.
+function publicoDelArticulo(articulo) {
+  return articulo?.audience ?? articulo?.product?.audience ?? 'ADULTO';
+}
+
+function nivelAdmitePublico(nivel, publico) {
+  return publico === 'NINO' ? esNivelInfantil(nivel) : !esNivelInfantil(nivel);
+}
+
+function casillerosDisponiblesPara(almacenCode, articulo, rack = '') {
   const modelo = articulo?.product?.id;
+  const publico = publicoDelArticulo(articulo);
+
   return casilleros(todoElMapa.filter((f) => f.almacen_code === almacenCode))
     .filter((c) => c.tallas.every((t) => t.product_id === modelo))
+    .filter((c) => nivelAdmitePublico(c.level, publico))
+    .filter((c) => !rack || c.rack === rack)
     .map((c) => ({ ...c, libre: (c.capacity_units ?? 0) - cajasEn(c) }))
     .filter((c) => c.libre > 0)
     .sort((a, b) => (b.tallas.length > 0) - (a.tallas.length > 0) || a.posicion.localeCompare(b.posicion));
 }
 
+// Los racks del almacén que tienen algún casillero válido para este artículo.
+// Sirve para partir en dos una lista de mil: primero el mueble, después el
+// hueco.
+function racksConSitioPara(almacenCode, articulo) {
+  const vistos = new Map();
+  for (const c of casillerosDisponiblesPara(almacenCode, articulo)) {
+    vistos.set(c.rack, (vistos.get(c.rack) ?? 0) + 1);
+  }
+  return [...vistos.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+// Cuántos pares de este artículo hay en el almacén y cuántos siguen sin bajar a
+// un estante. Es la misma cuenta que hace ubicar_en_casillero antes de aceptar
+// nada; tenerla delante evita descubrirla a base de errores.
+function pendientePorUbicar(almacenCode, articulo) {
+  const almacen = layoutAlmacenes.find((a) => a.code === almacenCode);
+  const inv = (articulo?.inventory ?? []).find((i) => i.warehouse_id === almacen?.id);
+  const stock = inv?.quantity ?? 0;
+
+  const ubicado = todoElMapa
+    .filter((f) => f.item_id === articulo?.id && f.almacen_code === almacenCode
+                && ['OCUPADA', 'EN_PICKING'].includes(f.estado_ocupacion))
+    .reduce((suma, f) => suma + (f.unidades ?? 0), 0);
+
+  return { stock, ubicado, falta: Math.max(stock - ubicado, 0), hayRegistro: Boolean(inv) };
+}
+
+function poblarSelectRacks(almacenCode) {
+  const select = document.getElementById('campoUbicRack');
+  const previo = select.value;
+  select.innerHTML = '';
+
+  const racks = racksConSitioPara(almacenCode, articuloAUbicar);
+  select.add(new Option(`Todos (${racks.reduce((s, [, n]) => s + n, 0)} casilleros)`, ''));
+  for (const [rack, cuantos] of racks) {
+    select.add(new Option(`${rack} — ${cuantos} con sitio`, rack));
+  }
+
+  // Por defecto, el rack donde el artículo ya tiene cajas: lo habitual es
+  // sumar a lo que ya está, y con "Todos" el desplegable puede pasar de
+  // novecientos casilleros. Se respeta el rack que se hubiera elegido a mano.
+  const dondeYaEsta = todoElMapa.find(
+    (f) => f.item_id === articuloAUbicar?.id && f.assignment_id && f.almacen_code === almacenCode)?.rack;
+  const preferido = racks.some(([r]) => r === previo) ? previo : (dondeYaEsta ?? '');
+  select.value = racks.some(([r]) => r === preferido) ? preferido : '';
+}
+
 function poblarSelectPosiciones(almacenCode) {
   const select = document.getElementById('campoUbicPosicion');
+  const ayuda = document.getElementById('ayudaUbicPosicion');
+  const rack = document.getElementById('campoUbicRack').value;
   select.innerHTML = '';
-  const disponibles = casillerosDisponiblesPara(almacenCode, articuloAUbicar);
+
+  const publico = publicoDelArticulo(articuloAUbicar);
+  const disponibles = casillerosDisponiblesPara(almacenCode, articuloAUbicar, rack);
 
   if (disponibles.length === 0) {
-    select.add(new Option('No hay casilleros con sitio para este modelo en este almacén', ''));
+    select.add(new Option('No hay casilleros con sitio para este modelo aquí', ''));
+    ayuda.textContent = rack
+      ? 'Prueba con otro rack o con "Todos".'
+      : 'Un casillero guarda un solo modelo, y este artículo solo puede ir en los niveles de su público.';
     return;
   }
 
@@ -170,6 +240,43 @@ function poblarSelectPosiciones(almacenCode) {
       c.position_id
     ));
   }
+
+  const juntables = disponibles.filter((c) => c.tallas.length > 0).length;
+  ayuda.textContent =
+    `${disponibles.length} con sitio (solo niveles de ${publico === 'NINO' ? 'infantil' : 'adulto'})` +
+    (juntables ? `; ${juntables} ya guarda${juntables === 1 ? '' : 'n'} este modelo y va${juntables === 1 ? '' : 'n'} primero.` : '.');
+}
+
+// El aviso de arriba y la cantidad que se propone. RESERVADA aparta sitio para
+// mercadería que todavía no llegó, así que ahí no se mide contra el stock.
+function actualizarPendiente() {
+  const almacenCode = document.getElementById('campoUbicAlmacen').value;
+  const aviso = document.getElementById('ubicPendiente');
+  const cantidad = document.getElementById('campoUbicCantidad');
+  const esReserva = document.getElementById('campoUbicEstado').value === 'RESERVADA';
+  const { stock, ubicado, falta, hayRegistro } = pendientePorUbicar(almacenCode, articuloAUbicar);
+
+  if (esReserva) {
+    aviso.textContent = 'Reservar aparta el casillero para mercadería que todavía no llegó: no descuenta del stock.';
+    aviso.classList.remove('hay-pendiente');
+    cantidad.removeAttribute('max');
+    return;
+  }
+
+  if (!hayRegistro) {
+    aviso.textContent = 'Este artículo no tiene stock registrado en este almacén: primero hace falta una ENTRADA aprobada.';
+    aviso.classList.remove('hay-pendiente');
+    cantidad.removeAttribute('max');
+    return;
+  }
+
+  aviso.textContent = falta > 0
+    ? `${stock} pares en stock aquí · ${ubicado} en estantes · quedan ${falta} por ubicar.`
+    : `${stock} pares en stock aquí y los ${ubicado} están en estantes: no queda nada por ubicar.`;
+  aviso.classList.toggle('hay-pendiente', falta > 0);
+
+  cantidad.max = falta;
+  if (falta > 0 && !cantidad.value) cantidad.value = falta;
 }
 
 function abrirModalUbicar(articulo) {
@@ -208,14 +315,25 @@ function abrirModalUbicar(articulo) {
   // pisa esa elección si el artículo ya está ubicado en alguno.
   const selectAlmacen = document.getElementById('campoUbicAlmacen');
   if (actuales[0]?.almacen_code) selectAlmacen.value = actuales[0].almacen_code;
+  poblarSelectRacks(selectAlmacen.value);
   poblarSelectPosiciones(selectAlmacen.value);
+  actualizarPendiente();
 
   mostrarModal('modalUbicacion');
 }
 
 document.getElementById('campoUbicAlmacen').addEventListener('change', (e) => {
+  document.getElementById('campoUbicCantidad').value = '';
+  poblarSelectRacks(e.target.value);
   poblarSelectPosiciones(e.target.value);
+  actualizarPendiente();
 });
+
+document.getElementById('campoUbicRack').addEventListener('change', () => {
+  poblarSelectPosiciones(document.getElementById('campoUbicAlmacen').value);
+});
+
+document.getElementById('campoUbicEstado').addEventListener('change', actualizarPendiente);
 
 function cerrarModalUbicacion() {
   ocultarModal('modalUbicacion');

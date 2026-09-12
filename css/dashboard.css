@@ -1135,6 +1135,22 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 
 /* Casillero con más cajas de las que caben. Antes la capacidad se inflaba para
    ocultarlo (migración 20); ahora se marca para que alguien lo descargue. */
+/* Cuántos pares de este artículo faltan por ubicar. Es el dato que decide si
+   este formulario tiene algo que hacer, así que va arriba y no como nota. */
+.ubic-pendiente {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--fondo-suave, #f4f5f7);
+  border-left: 3px solid var(--borde, #d0d5dd);
+  font-size: 13px;
+}
+
+.ubic-pendiente.hay-pendiente {
+  border-left-color: var(--ambar, #b54708);
+  background: var(--ambar-suave, #fffaeb);
+}
+
 .campo-ayuda {
   margin: 4px 0 0;
   font-size: 12px;
