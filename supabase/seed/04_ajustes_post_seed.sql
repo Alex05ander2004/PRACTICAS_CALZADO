@@ -33,6 +33,30 @@ $$;
 
 
 -- -----------------------------------------------------------------------------
+--  A bis. Cada artículo hereda del producto lo que el seed no le puso
+-- -----------------------------------------------------------------------------
+-- El público y el proveedor son del ARTÍCULO desde la migración 27, que los
+-- rellenó desde el producto para los que ya existían. En una instalación limpia
+-- esa migración no encuentra nada, así que se repite aquí.
+--
+-- El público importa antes de esto —decide en qué nivel puede ir cada caja, y
+-- los seeds ya ubican stock—, por eso los seeds lo ponen ellos. Esto es la red
+-- por si algún artículo se quedara sin él.
+update public.inventory_items it
+   set audience = case when pr.audience = 'NINO' then 'NINO' else 'ADULTO' end
+  from public.products pr
+ where pr.id = it.product_id
+   and it.audience is distinct from (case when pr.audience = 'NINO' then 'NINO' else 'ADULTO' end);
+
+update public.inventory_items it
+   set supplier_id = pr.supplier_id
+  from public.products pr
+ where pr.id = it.product_id
+   and it.supplier_id is null
+   and pr.supplier_id is not null;
+
+
+-- -----------------------------------------------------------------------------
 --  B. Medidas de la caja en cada artículo (migración 28)
 -- -----------------------------------------------------------------------------
 with caja as (

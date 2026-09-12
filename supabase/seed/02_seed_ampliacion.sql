@@ -58,15 +58,26 @@ on conflict (slug) do nothing;
 -- =============================================================================
 --  BLOQUE C — RACK DE AMPLIACIÓN POR ALMACÉN (mismo mapa, más capacidad)
 -- =============================================================================
-insert into public.racks (warehouse_id, code)
-select w.id, 'RACK-07' from public.warehouses w
+-- La geometria es obligatoria desde la migracion 09: alli se calculo para los
+-- racks que ya existian y despues se puso NOT NULL sin default, asi que en una
+-- instalacion limpia hay que darla al insertar. Se usa la misma formula de esa
+-- migracion -dos columnas de racks de 14x2 con pasillo en medio- contando los
+-- que ya haya en el almacen, para que ninguno pise a otro y el trigger
+-- anti-solape no rechace el seed.
+insert into public.racks (warehouse_id, code, grid_x, grid_y, grid_ancho, grid_alto)
+select w.id, 'RACK-07',
+       (3 + ((select count(*) from public.racks r where r.warehouse_id = w.id) % 2) * 18)::integer,
+       (3 + ((select count(*) from public.racks r where r.warehouse_id = w.id) / 2) * 6)::integer,
+       14, 2
+from public.warehouses w
 on conflict (warehouse_id, code) do nothing;
 
 -- 25 posiciones por almacén (letra = inicial del código de almacén, igual que
 -- en seed.sql): sobran de sobra para los 50 artículos nuevos repartidos en 3
 -- almacenes.
-insert into public.positions (rack_id, code, capacity_units)
-select r.id, left(w.code, 1) || '-07-' || lpad(n::text, 2, '0'), 200
+-- Nivel 3: es calzado de adulto, y del 1 al 2 son infantiles (migracion 15).
+insert into public.positions (rack_id, code, capacity_units, level)
+select r.id, left(w.code, 1) || '-07-' || lpad(n::text, 2, '0'), 200, 3
 from public.warehouses w
 join public.racks r on r.warehouse_id = w.id and r.code = 'RACK-07'
 cross join generate_series(1, 25) as n

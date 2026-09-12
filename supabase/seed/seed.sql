@@ -115,18 +115,38 @@ on conflict (slug) do nothing;
 -- =============================================================================
 --  BLOQUE C — MAPA DEL ALMACÉN (racks y posiciones que el CSV usa de verdad)
 -- =============================================================================
-insert into public.racks (warehouse_id, code)
-select w.id, x.rack_code
-from (values
-  ('ALM-A', 'RACK-03'), ('ALM-A', 'RACK-01'), ('ALM-A', 'RACK-05'), ('ALM-A', 'RACK-06'),
-  ('BOD-B', 'RACK-02'), ('BOD-B', 'RACK-04'), ('BOD-B', 'RACK-01'),
-  ('BOD-C', 'RACK-02'), ('BOD-C', 'RACK-06')
-) as x(wh_code, rack_code)
-join public.warehouses w on w.code = x.wh_code
+-- La geometria es obligatoria desde la migracion 09: alli se calculo para los
+-- racks que ya existian y despues se puso NOT NULL sin default, asi que en una
+-- instalacion limpia hay que darla al insertar. Se usa la misma formula de esa
+-- migracion -dos columnas de racks de 14x2 con pasillo en medio- contando los
+-- que ya haya en el almacen, para que ninguno pise a otro y el trigger
+-- anti-solape no rechace el seed.
+with nuevos as (
+  select w.id as warehouse_id,
+         x.rack_code,
+         (select count(*) from public.racks r where r.warehouse_id = w.id)
+           + (row_number() over (partition by w.id order by x.rack_code) - 1) as n
+  from (values
+    ('ALM-A', 'RACK-03'), ('ALM-A', 'RACK-01'), ('ALM-A', 'RACK-05'), ('ALM-A', 'RACK-06'),
+    ('BOD-B', 'RACK-02'), ('BOD-B', 'RACK-04'), ('BOD-B', 'RACK-01'),
+    ('BOD-C', 'RACK-02'), ('BOD-C', 'RACK-06')
+  ) as x(wh_code, rack_code)
+  join public.warehouses w on w.code = x.wh_code
+)
+insert into public.racks (warehouse_id, code, grid_x, grid_y, grid_ancho, grid_alto)
+select warehouse_id, rack_code,
+       (3 + (n % 2) * 18)::integer,
+       (3 + (n / 2) * 6)::integer,
+       14, 2
+from nuevos
 on conflict (warehouse_id, code) do nothing;
 
-insert into public.positions (rack_id, code, capacity_units)
-select r.id, x.pos_code, 200
+-- level es obligatorio desde la migracion 04. Va 3 y no 2 porque la 15 cambio
+-- la regla: los niveles 1 y 2 quedaron reservados para calzado infantil y el de
+-- adulto empieza en el 3. Con nivel 2, el trigger de publico rechazaria todo el
+-- stock que este seed ubica.
+insert into public.positions (rack_id, code, capacity_units, level)
+select r.id, x.pos_code, 200, 3
 from (values
   ('ALM-A','RACK-03','A-03-02'), ('ALM-A','RACK-01','A-01-03'),
   ('BOD-B','RACK-02','B-02-01'), ('BOD-B','RACK-04','B-04-02'),

@@ -18,8 +18,18 @@
 -- =============================================================================
 --  BLOQUE A — RACK INFANTIL POR ALMACÉN (nivel 1: inferior)
 -- =============================================================================
-insert into public.racks (warehouse_id, code)
-select w.id, 'RACK-08' from public.warehouses w
+-- La geometria es obligatoria desde la migracion 09: alli se calculo para los
+-- racks que ya existian y despues se puso NOT NULL sin default, asi que en una
+-- instalacion limpia hay que darla al insertar. Se usa la misma formula de esa
+-- migracion -dos columnas de racks de 14x2 con pasillo en medio- contando los
+-- que ya haya en el almacen, para que ninguno pise a otro y el trigger
+-- anti-solape no rechace el seed.
+insert into public.racks (warehouse_id, code, grid_x, grid_y, grid_ancho, grid_alto)
+select w.id, 'RACK-08',
+       (3 + ((select count(*) from public.racks r where r.warehouse_id = w.id) % 2) * 18)::integer,
+       (3 + ((select count(*) from public.racks r where r.warehouse_id = w.id) / 2) * 6)::integer,
+       14, 2
+from public.warehouses w
 on conflict (warehouse_id, code) do nothing;
 
 insert into public.positions (rack_id, code, capacity_units, level)
@@ -52,8 +62,12 @@ join public.categories c on c.slug = x.cat_slug
 join public.suppliers  s on s.slug = x.sup_slug
 on conflict (model_code) do nothing;
 
-insert into public.inventory_items (product_id, sku, size_label, price, cost)
-select p.id, x.model_code || '-' || x.talla, x.talla, x.price, x.cost
+-- audience va tambien en el articulo, no solo en el producto: desde la
+-- migracion 27 es el del ARTICULO el que decide el tamano de la caja y en que
+-- nivel del rack puede ir. Sin esto se quedaria con el default 'ADULTO' y el
+-- trigger rechazaria ubicarlo en el nivel 1.
+insert into public.inventory_items (product_id, sku, size_label, price, cost, audience)
+select p.id, x.model_code || '-' || x.talla, x.talla, x.price, x.cost, 'NINO'
 from (values
   ('ZAP-056','33', 220, 150), ('ZAP-057','29', 180, 120), ('ZAP-058','31', 190, 130),
   ('ZAP-059','30', 150, 100), ('ZAP-060','32', 140,  95), ('ZAP-061','28', 130,  85),
