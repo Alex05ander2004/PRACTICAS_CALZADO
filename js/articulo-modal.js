@@ -175,6 +175,11 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
   boton.textContent = 'Guardando…';
 
   try {
+    // El formulario declara required, pattern y máximos desde siempre, pero
+    // hasta ahora nadie los aplicaba: llevaba novalidate y no se preguntaba.
+    const problema = primerErrorDelFormulario(evento.target);
+    if (problema) throw new Error(problema);
+
     const sku = document.getElementById('campoSku').value.trim();
     const talla = document.getElementById('campoTalla').value.trim();
     const price = parseFloatOrNull(document.getElementById('campoPrecio').value);
@@ -191,6 +196,9 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
     const paraActualizarItem = { sku, size_label: talla, price, cost, weight, length, width, height };
     const minStock = parseInt(document.getElementById('campoStockMinimo').value, 10) || 0;
     const maxStock = parseFloatOrNull(document.getElementById('campoStockMaximo').value);
+    if (maxStock != null && maxStock < minStock) {
+      throw new Error(`El stock máximo (${maxStock}) no puede ser menor que el mínimo (${minStock}).`);
+    }
 
     if (articuloEnEdicion) {
       await CatalogoAPI.actualizarProducto(articuloEnEdicion.product.id, {
@@ -247,7 +255,7 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
     cerrarModalArticulo();
     await recargarArticulos();
   } catch (err) {
-    errorEl.textContent = err.message ?? 'No se pudo guardar. Intenta de nuevo.';
+    errorEl.textContent = traducirError(err, 'No se pudo guardar. Intenta de nuevo.');
     errorEl.hidden = false;
     errorEl.focus();
   } finally {
@@ -301,3 +309,9 @@ function mostrarToast(mensaje, tipo = 'info') {
   cont.appendChild(toast);
   setTimeout(() => toast.remove(), 5000);
 }
+
+// El SKU y el código de modelo van en mayúscula: la base exige sku = upper(sku)
+// y el formato no admite puntos ni signos. La talla, con punto decimal.
+normalizarCodigoAlEscribir('campoSku');
+normalizarCodigoAlEscribir('campoModelCode');
+normalizarTallaAlEscribir('campoTalla');

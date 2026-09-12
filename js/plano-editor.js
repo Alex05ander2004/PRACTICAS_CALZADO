@@ -1120,7 +1120,7 @@ document.getElementById('formNuevoRack').addEventListener('submit', async (event
     mostrarToast('Rack creado. Arrástralo a su lugar en el plano.', 'ok');
     await recargarLayout();
   } catch (err) {
-    errorEl.textContent = err.message ?? 'No se pudo crear el rack.';
+    errorEl.textContent = traducirError(err, 'No se pudo crear el rack.');
     errorEl.hidden = false;
     errorEl.focus();
   } finally {
@@ -1173,23 +1173,6 @@ function poblarSelectsDeAlmacen() {
   almacenEnVista = document.getElementById('filtroMapaAlmacen').value;
   document.getElementById('contextoAlmacenes').textContent =
     layoutAlmacenes.map((a) => a.name).join(' · ');
-}
-
-// Los <form> llevan novalidate para que el navegador no dibuje sus propios
-// globos encima del modal. Las reglas declarativas (required, maxlength,
-// pattern) igual se evaluan: esto las traduce al mismo recuadro donde caen los
-// errores que vienen de la base, para que el usuario mire siempre al mismo
-// sitio. El title del campo es el mensaje, que por eso esta redactado como
-// explicacion y no como nota al pie.
-function primerErrorDelFormulario(form) {
-  const campo = form.querySelector(':invalid');
-  if (!campo) return null;
-
-  campo.focus();
-  const etiqueta = form.querySelector(`label[for="${campo.id}"]`)?.textContent?.trim() ?? 'Un campo';
-  if (campo.validity.valueMissing) return `Falta completar "${etiqueta}".`;
-  if (campo.validity.tooLong) return `"${etiqueta}" no puede pasar de ${campo.maxLength} caracteres.`;
-  return campo.title || `"${etiqueta}" no tiene el formato esperado.`;
 }
 
 const cerrarModalAlmacen = () => ocultarModal('modalNuevoAlmacen');
@@ -1251,7 +1234,7 @@ document.getElementById('formNuevoAlmacen').addEventListener('submit', async (ev
 
     mostrarToast(`${creado.name} creado (${creado.grid_ancho} × ${creado.grid_alto} m). Agrégale racks.`, 'ok');
   } catch (err) {
-    errorEl.textContent = err.message ?? 'No se pudo crear el almacén.';
+    errorEl.textContent = traducirError(err, 'No se pudo crear el almacén.');
     errorEl.hidden = false;
     errorEl.focus();
   } finally {
@@ -1466,3 +1449,6 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-backdrop:not([hidden])')) return;
   cerrarContenidoRack();
 });
+
+normalizarCodigoAlEscribir('campoNuevoAlmacenCodigo');
+normalizarCodigoAlEscribir('campoNuevoRackCodigo');

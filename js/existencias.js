@@ -11,6 +11,7 @@
 
 let filtroExistencias = '';   // en minúsculas, para comparar
 let textoBuscado = '';        // tal como se escribió, para mostrarlo
+let ambitoExistencias = 'todo';
 
 const tomar = (mapa, clave, crear) => {
   if (!mapa.has(clave)) mapa.set(clave, crear());
@@ -59,17 +60,41 @@ function agruparExistencias(filas) {
   return almacenes;
 }
 
-// Un modelo entra en la búsqueda por su código, su nombre, cualquiera de sus
-// SKU, una talla exacta o un casillero: "574", "new balance", "ZAP-005-40",
-// "40" y "A-07-12" tienen que encontrarlo.
+// La talla se compara exacta y el resto por contenido. Eso solo no alcanza:
+// "40" es la talla 40, pero también está dentro del modelo ZAP-040 y de todo
+// SKU terminado en -40, así que sin ámbito los resultados se mezclan.
+function porModelo(modelo, t) {
+  const codigo = (modelo.codigo ?? '').toLowerCase();
+  // t.startsWith(codigo) deja pegar un SKU entero ("zap-005-40") y encontrar su
+  // modelo, sin que un número suelto haga coincidir a todos por su SKU.
+  return codigo.includes(t)
+    || (modelo.nombre ?? '').toLowerCase().includes(t)
+    || (codigo !== '' && t.startsWith(codigo));
+}
+
+const porTalla = (modelo, t) => [...modelo.tallas.keys()].some((talla) => String(talla).toLowerCase() === t);
+const porCasillero = (modelo, t) => [...modelo.casilleros].some((c) => (c ?? '').toLowerCase().includes(t));
+
+// "Dónde" son tres niveles del mismo eje: almacén, rack y casillero. El código
+// de casillero (A-07-52) no contiene la palabra "RACK", así que buscar el rack
+// tiene que mirar su código aparte.
+function coincideUbicacion(rack, alm) {
+  if (!filtroExistencias) return false;
+  if (ambitoExistencias !== 'todo' && ambitoExistencias !== 'ubicacion') return false;
+  const t = filtroExistencias;
+  return (rack.code ?? '').toLowerCase().includes(t)
+    || (alm.code ?? '').toLowerCase().includes(t)
+    || (alm.nombre ?? '').toLowerCase().includes(t);
+}
+
 function coincideExistencia(modelo) {
   if (!filtroExistencias) return true;
   const t = filtroExistencias;
-  return (modelo.codigo ?? '').toLowerCase().includes(t)
-    || (modelo.nombre ?? '').toLowerCase().includes(t)
-    || [...modelo.skus].some((sku) => (sku ?? '').toLowerCase().includes(t))
-    || [...modelo.tallas.keys()].some((talla) => String(talla).toLowerCase() === t)
-    || [...modelo.casilleros].some((c) => (c ?? '').toLowerCase().includes(t));
+  if (ambitoExistencias === 'modelo') return porModelo(modelo, t);
+  if (ambitoExistencias === 'talla') return porTalla(modelo, t);
+  if (ambitoExistencias === 'ubicacion') return porCasillero(modelo, t);
+  return porModelo(modelo, t) || porTalla(modelo, t) || porCasillero(modelo, t)
+    || [...modelo.skus].some((sku) => (sku ?? '').toLowerCase().includes(t));
 }
 
 function dato(texto, clase = 'exis-datos') {
@@ -127,7 +152,15 @@ function renderExistencias() {
   for (const { code } of ordenados) {
     const alm = almacenes.get(code) ?? { code, nombre: nombreDeAlmacen(code), racks: new Map(), modelos: new Set(), pares: 0 };
     const conStock = [...alm.racks.values()]
-      .map((rack) => ({ rack, lista: [...rack.modelos.values()].filter(coincideExistencia).sort((a, b) => b.pares - a.pares) }))
+      // Si lo que coincide es el rack o el almacén, se muestra entero; si
+      // coincide un casillero suelto, solo lo que guarda ese casillero.
+      .map((rack) => {
+        const entero = coincideUbicacion(rack, alm);
+        const lista = [...rack.modelos.values()]
+          .filter((m) => entero || coincideExistencia(m))
+          .sort((a, b) => b.pares - a.pares);
+        return { rack, lista };
+      })
       .filter(({ lista }) => lista.length > 0)
       .sort((a, b) => a.rack.code.localeCompare(b.rack.code, undefined, { numeric: true }));
     if (conStock.length === 0) {
@@ -187,7 +220,7 @@ function renderExistencias() {
     const vacio = document.createElement('p');
     vacio.className = 'exis-vacio';
     vacio.textContent = filtroExistencias
-      ? `Nada coincide con "${textoBuscado}".`
+      ? `Nada coincide con "${textoBuscado}"${AMBITOS[ambitoExistencias] ?? ''}.`
       : 'Todavía no hay nada ubicado en los estantes.';
     cont.appendChild(vacio);
   }
@@ -195,6 +228,21 @@ function renderExistencias() {
     ? `${modelos.size} modelo${modelos.size === 1 ? '' : 's'} en ${racks} rack${racks === 1 ? '' : 's'} · ${formatearNumero(pares)} pares`
     : `${racks} racks con existencias · ${modelos.size} modelos ubicados · ${formatearNumero(pares)} pares`;
 }
+
+// Qué dice el mensaje de vacío y qué se espera escribir en cada ámbito.
+const AMBITOS = { todo: '', modelo: ' en modelos y SKU', talla: ' en las tallas', ubicacion: ' en almacenes, racks y casilleros' };
+const PISTAS = {
+  todo: 'Buscar modelo, SKU, talla, rack o casillero…',
+  modelo: 'Modelo o SKU: 574, pegasus, ZAP-005-40…',
+  talla: 'Talla exacta: 40, 41.5…',
+  ubicacion: 'Almacén, rack o casillero: BOD-B, RACK-07, A-07-52…',
+};
+
+document.getElementById('ambitoExistencias').addEventListener('change', (e) => {
+  ambitoExistencias = e.target.value;
+  document.getElementById('buscarExistencias').placeholder = PISTAS[ambitoExistencias];
+  renderExistencias();
+});
 
 document.getElementById('buscarExistencias').addEventListener('input', (e) => {
   textoBuscado = e.target.value.trim();

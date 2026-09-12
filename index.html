@@ -298,9 +298,17 @@
         </div>
         <div class="filtros">
           <label class="exis-buscador">
-            <span class="sr-only">Buscar por modelo, SKU, talla o casillero</span>
-            <input id="buscarExistencias" type="search" placeholder="Buscar modelo, SKU, talla o casillero…" />
+            <span class="sr-only">Buscar en las existencias</span>
+            <input id="buscarExistencias" type="search" placeholder="Buscar modelo, SKU, talla, rack o casillero…" />
           </label>
+          <!-- Sin ámbito, buscar "40" mezcla la talla 40 con el modelo ZAP-040
+               y con todo SKU terminado en -40. -->
+          <select id="ambitoExistencias" class="filtro-select" aria-label="Dónde buscar">
+            <option value="todo">Buscar en: todo</option>
+            <option value="modelo">Solo modelo o SKU</option>
+            <option value="talla">Solo talla</option>
+            <option value="ubicacion">Solo ubicación</option>
+          </select>
           <button type="button" id="btnLimpiarExistencias" class="btn-secundario btn-chico">Limpiar</button>
         </div>
         <p id="contadorExistencias" class="contador-resultados" role="status" aria-live="polite"></p>
@@ -342,7 +350,7 @@
       <div class="fila-2" id="bloqueModeloMarca">
         <div class="campo">
           <label for="campoModelCode">Código de modelo</label>
-          <input id="campoModelCode" type="text" placeholder="ZAP-066" maxlength="11" pattern="[A-Za-z]{2,5}-[0-9]{3,5}" title="Formato ZAP-001" />
+          <input id="campoModelCode" type="text" placeholder="ZAP-066" maxlength="11" pattern="[A-Za-z]{2,5}-[0-9]{3,5}" title="Dos a cinco letras, un guion y tres a cinco números: ZAP-001" />
         </div>
         <div class="campo">
           <label for="campoMarca">Marca</label>
@@ -380,7 +388,7 @@
         </div>
         <div class="campo">
           <label for="campoTalla">Talla (EU)</label>
-          <input id="campoTalla" type="text" required maxlength="6" />
+          <input id="campoTalla" type="text" required maxlength="4" inputmode="decimal" pattern="[0-9]{1,2}([.][0-9])?" title="Número de talla: 40 o 41.5" />
         </div>
         <div class="campo" id="campoAlmacenGrupo">
           <label for="campoAlmacen">Almacén</label>
@@ -391,41 +399,41 @@
       <div class="fila-4">
         <div class="campo">
           <label for="campoPeso">Peso (kg)</label>
-          <input id="campoPeso" type="number" step="0.01" min="0" />
+          <input id="campoPeso" type="number" step="0.01" min="0" max="9999.99" />
         </div>
         <div class="campo">
           <label for="campoLargo">Largo (cm)</label>
-          <input id="campoLargo" type="number" step="0.1" min="0" />
+          <input id="campoLargo" type="number" step="0.1" min="0" max="9999.9" />
         </div>
         <div class="campo">
           <label for="campoAncho">Ancho (cm)</label>
-          <input id="campoAncho" type="number" step="0.1" min="0" />
+          <input id="campoAncho" type="number" step="0.1" min="0" max="9999.9" />
         </div>
         <div class="campo">
           <label for="campoAlto">Alto (cm)</label>
-          <input id="campoAlto" type="number" step="0.1" min="0" />
+          <input id="campoAlto" type="number" step="0.1" min="0" max="9999.9" />
         </div>
       </div>
 
       <div class="fila-2">
         <div class="campo">
           <label for="campoCosto">Costo (S/)</label>
-          <input id="campoCosto" type="number" step="0.01" min="0" />
+          <input id="campoCosto" type="number" step="0.01" min="0" max="999999.99" />
         </div>
         <div class="campo">
           <label for="campoPrecio">Precio (S/)</label>
-          <input id="campoPrecio" type="number" step="0.01" min="0" />
+          <input id="campoPrecio" type="number" step="0.01" min="0" max="999999.99" />
         </div>
       </div>
 
       <div class="fila-2" id="grupoUmbrales">
         <div class="campo">
           <label for="campoStockMinimo">Stock mínimo</label>
-          <input id="campoStockMinimo" type="number" step="1" min="0" value="5" />
+          <input id="campoStockMinimo" type="number" step="1" min="0" max="99999" value="5" />
         </div>
         <div class="campo">
           <label for="campoStockMaximo">Stock máximo</label>
-          <input id="campoStockMaximo" type="number" step="1" min="0" />
+          <input id="campoStockMaximo" type="number" step="1" min="0" max="99999" />
         </div>
       </div>
 
@@ -625,7 +633,7 @@
       <div class="fila-2">
         <div class="campo">
           <label for="campoNuevoAlmacenCodigo">Código</label>
-          <input id="campoNuevoAlmacenCodigo" type="text" placeholder="ALM-D" required maxlength="12" pattern="[A-Za-z0-9]{2,10}(-[A-Za-z0-9]{1,10})*" title="Letras y números, separados por guiones: ALM-D, BOD-02" />
+          <input id="campoNuevoAlmacenCodigo" type="text" placeholder="ALM-D" required maxlength="10" pattern="[A-Za-z]{3}-[A-Za-z0-9]{1,6}" title="Tres letras, un guion y hasta seis letras o números: ALM-D, BOD-02" />
         </div>
         <div class="campo">
           <label for="campoNuevoAlmacenNombre">Nombre</label>
@@ -715,6 +723,7 @@
   <script src="js/api/movimientos.js"></script>
   <script src="js/api/alertas.js"></script>
   <script src="js/custom-select.js"></script>
+  <script src="js/formularios.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/articulo-modal.js"></script>
   <script src="js/movimiento-modal.js"></script>
