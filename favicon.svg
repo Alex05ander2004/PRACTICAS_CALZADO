@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Caja de calzado">
+  <!--
+    Icono de la pestana: una caja de zapatos, que es la unidad de la que habla
+    todo el sistema (el stock se cuenta en cajas y los casilleros se dimensionan
+    para que quepan). Dibujado en macizo y sin detalle fino a proposito: a 16 px
+    solo sobreviven la silueta y el corte de la tapa, y son esas dos cosas las
+    que la hacen legible como caja y no como un cuadrado cualquiera.
+
+    La caja ocupa casi todo el cuadro por lo mismo: con margenes generosos, a
+    16 px se convertia en una mancha diminuta en medio del azul.
+
+    El fondo va en el color de acento de la aplicacion, el #1D6F8C que define la
+    variable "accent" en css/dashboard.css, para que la pestana se reconozca por
+    su mancha de color antes de leer el titulo y se vea igual sobre barra clara
+    u oscura.
+
+    Ojo al editar: esto es XML, y un comentario XML no admite dos guiones
+    seguidos. Nombrar aqui la variable CSS con su prefijo rompia el archivo
+    entero y el icono no aparecia.
+  -->
+  <rect width="32" height="32" rx="7" fill="#1D6F8C"/>
+
+  <!-- Cuerpo de la caja -->
+  <rect x="5.5" y="14" width="21" height="11.5" rx="1.8" fill="#FFFFFF"/>
+
+  <!-- Tapa, mas ancha que el cuerpo -->
+  <rect x="3" y="7.5" width="26" height="7" rx="1.8" fill="#FFFFFF"/>
+
+  <!-- La junta entre tapa y cuerpo: a 16 px es lo unico que separa las dos
+       piezas, asi que va bien marcada -->
+  <rect x="3" y="13.4" width="26" height="1.5" fill="#1D6F8C" opacity=".55"/>
+
+  <!-- Etiqueta del modelo -->
+  <rect x="12.5" y="17.6" width="7" height="4.6" rx="1.1" fill="#1D6F8C" opacity=".4"/>
+</svg>
