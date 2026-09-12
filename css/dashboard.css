@@ -1137,6 +1137,26 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
    ocultarlo (migración 20); ahora se marca para que alguien lo descargue. */
 /* Cuántos pares de este artículo faltan por ubicar. Es el dato que decide si
    este formulario tiene algo que hacer, así que va arriba y no como nota. */
+/* La talla que no es stock disponible sin más: apartada para algo que no ha
+   llegado, o comprometida para un pedido. El color es el mismo del plano. */
+.exis-talla.reservada {
+  background: var(--warn-weak);
+  border-color: var(--warn);
+}
+
+.exis-talla.en_picking {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+}
+
+/* El motivo por el que una ubicación no se puede liberar, donde iría su botón. */
+.linea-nota {
+  font-size: 12px;
+  color: var(--texto-suave, #667085);
+  font-style: italic;
+  text-align: right;
+}
+
 .ubic-pendiente {
   margin: 0 0 12px;
   padding: 8px 12px;
@@ -1387,3 +1407,67 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
 }
 
 .campo-opcional { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+
+
+/* =============================================================================
+   SECCIÓN EQUIPO
+   ============================================================================= */
+.seccion-nota {
+  margin: 0 0 14px;
+  max-width: 70ch;
+  color: var(--texto-suave, #667085);
+  font-size: 13px;
+}
+
+.section-subtitulo {
+  margin: 26px 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.input-tope {
+  width: 100%;
+  max-width: 110px;
+  padding: 5px 8px;
+  border: 1px solid var(--borde, #d0d5dd);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+
+/* El rol, con el mismo color en la tabla y en la chuleta de abajo. */
+.rol-chip.rol-jefe       { background: var(--accent-weak); color: var(--accent); }
+.rol-chip.rol-supervisor { background: var(--warn-weak);   color: var(--warn); }
+.rol-chip.rol-operario   { background: var(--ok-weak);     color: var(--ok); }
+.rol-chip.rol-auditor    { background: var(--fondo-suave, #f4f5f7); color: var(--texto-suave, #667085); }
+
+.pill.off {
+  background: var(--fondo-suave, #f4f5f7);
+  color: var(--texto-suave, #667085);
+}
+
+.permisos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.permiso-rol {
+  padding: 14px;
+  border: 1px solid var(--borde, #d0d5dd);
+  border-radius: 10px;
+  background: var(--fondo-tarjeta, #fff);
+}
+
+.permiso-resumen {
+  margin: 10px 0 8px;
+  font-size: 13px;
+  color: var(--texto-suave, #667085);
+}
+
+.permiso-rol ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}

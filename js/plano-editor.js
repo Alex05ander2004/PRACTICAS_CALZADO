@@ -21,10 +21,12 @@ function inicializarLayout(layout) {
   poblarSelectsDeAlmacen();
 }
 
+// El almacén con ese código, del layout ya cargado.
 function almacenPorCodigo(codigo) {
   return layoutAlmacenes.find((a) => a.code === codigo);
 }
 
+// Los racks de un almacén.
 function racksDe(almacenId) {
   return layoutRacks.filter((r) => r.warehouse_id === almacenId);
 }
@@ -61,6 +63,8 @@ function pegarAPared(x, y, ancho, alto) {
   return { x: cx, y: alto - 1, pared };
 }
 
+// Si esa celda de la cuadrícula la ocupa algún rack. Se usa para no dejar la
+// puerta detrás de un mueble y para saber por dónde se puede caminar.
 function celdaTapadaPorRack(almacen, x, y) {
   return racksDe(almacen.id).some((rack) => {
     const g = geometriaDe(rack);
@@ -147,6 +151,7 @@ function celdasDeAcceso(grilla, geometria) {
   return metas;
 }
 
+// Clave de celda para los mapas del A*: "3,7".
 const clave = (x, y) => `${x},${y}`;
 
 // A* con 8 direcciones. La cola de prioridad es una búsqueda lineal del
@@ -269,8 +274,11 @@ function configuracionDeRack(rack, almacenCode) {
   };
 }
 
+// Números con separador de miles en español.
 const formatearNumero = (n) => Number(n ?? 0).toLocaleString('es-PE');
 
+// Dibuja un almacén completo: la cuadrícula a escala, sus racks colocados sobre
+// ella y la puerta. Todo en divs posicionados, sin canvas ni librerías.
 function renderUnPlano(almacen, mapaFilas) {
   const bloque = document.createElement('div');
   bloque.className = 'mapa-bloque-almacen';
@@ -348,6 +356,7 @@ function renderUnPlano(almacen, mapaFilas) {
   return bloque;
 }
 
+// Dibuja el almacén elegido, o todos si no hay filtro.
 function renderPlano(almacenFiltro, mapaFilas) {
   const cont = document.getElementById('mapaPlano');
   cont.innerHTML = '';
@@ -470,10 +479,13 @@ function habilitarArrastre(plano, almacen) {
   plano.addEventListener('pointercancel', soltar);
 }
 
+// Si hay racks movidos sin guardar.
 function hayCambiosPendientes() {
   return racksModificados.size > 0 || entradaModificada.size > 0;
 }
 
+// Enciende o apaga la barra de edición según lo que haya seleccionado y sin
+// guardar.
 function actualizarBarraEdicion() {
   const n = racksModificados.size;
   const puertas = entradaModificada.size;
@@ -572,6 +584,7 @@ document.getElementById('btnGuardarLayout').addEventListener('click', async () =
 // prometer el recorrido MÁS corto y no "uno bastante bueno".
 const MAX_PARADAS_RUTA = 8;
 
+// Llena los selectores de paradas de la ruta con los racks del almacén.
 function poblarSelectsRuta(almacenCode) {
   const lista = document.getElementById('listaParadasRuta');
   const boton = document.getElementById('btnCalcularRuta');
@@ -610,6 +623,7 @@ function poblarSelectsRuta(almacenCode) {
   boton.disabled = false;
 }
 
+// Los racks marcados como parada, sin repetir.
 function paradasElegidas() {
   return [...document.querySelectorAll('#listaParadasRuta input:checked')].map((c) => c.value);
 }
@@ -717,10 +731,12 @@ document.getElementById('listaParadasRuta').addEventListener('change', () => {
   if (rutaActual) invalidarRuta();
 });
 
+// Vuelve a dibujar el plano conservando la selección actual.
 function repintar() {
   renderPlano(document.getElementById('filtroMapaAlmacen').value, todoElMapa);
 }
 
+// Selecciona un rack y abre su panel con capacidad y ocupación.
 function seleccionarRack(rackId) {
   rackSeleccionado = rackId;
   const rack = layoutRacks.find((r) => r.id === rackId);
@@ -739,6 +755,7 @@ function seleccionarRack(rackId) {
   repintar();
 }
 
+// Quita la selección y cierra el panel.
 function deseleccionarRack() {
   rackSeleccionado = null;
   document.getElementById('panelRack').hidden = true;
@@ -855,6 +872,7 @@ document.addEventListener('change', (evento) => {
   confirmarDescartarYCambiar(destino);
 }, true);
 
+// Avisa antes de cambiar de almacén si hay racks movidos sin guardar.
 function confirmarDescartarYCambiar(destino) {
   const n = racksModificados.size + entradaModificada.size;
   const nombre = almacenPorCodigo(destino)?.name ?? 'todos los almacenes';
@@ -933,6 +951,9 @@ function problemaDeForma(ancho, alto) {
   return null;
 }
 
+// Cambia el tamaño del rack seleccionado, avisando de lo que implica: menos
+// fondo o menos frente es menos capacidad, y la base no deja bajar de lo que ya
+// hay guardado.
 function redimensionarSeleccionado(nuevoAncho, nuevoAlto) {
   const rack = layoutRacks.find((r) => r.id === rackSeleccionado);
   if (!rack) return;
@@ -1023,6 +1044,7 @@ function primerHuecoLibre(almacen, ancho, alto) {
   return null;
 }
 
+// Propone el siguiente código de rack libre del almacén.
 function siguienteCodigoRack(almacen) {
   const usados = new Set(racksDe(almacen.id).map((r) => r.code));
   for (let i = 1; i <= 99; i++) {
@@ -1076,6 +1098,8 @@ async function refrescarEstimacionNuevoRack() {
 ['campoNuevoRackAncho', 'campoNuevoRackAlto', 'campoNuevoRackNiveles']
   .forEach((id) => document.getElementById(id).addEventListener('change', refrescarEstimacionNuevoRack));
 
+// Cierres de los modales del plano. Se declaran como constantes porque se
+// enganchan a varios sitios: el aspa, el botón de cancelar y el clic al fondo.
 const cerrarModalRack = () => ocultarModal('modalNuevoRack');
 document.getElementById('btnCerrarModalRack').addEventListener('click', cerrarModalRack);
 document.getElementById('btnCancelarNuevoRack').addEventListener('click', cerrarModalRack);
@@ -1175,6 +1199,7 @@ function poblarSelectsDeAlmacen() {
     layoutAlmacenes.map((a) => a.name).join(' · ');
 }
 
+// Ídem para el alta de almacén.
 const cerrarModalAlmacen = () => ocultarModal('modalNuevoAlmacen');
 document.getElementById('btnCerrarModalAlmacen').addEventListener('click', cerrarModalAlmacen);
 document.getElementById('btnCancelarNuevoAlmacen').addEventListener('click', cerrarModalAlmacen);
@@ -1182,6 +1207,8 @@ document.getElementById('modalNuevoAlmacen').addEventListener('click', (e) => {
   if (e.target.id === 'modalNuevoAlmacen') cerrarModalAlmacen();
 });
 
+// Los metros cuadrados del almacén que se está creando, según se teclean las
+// medidas.
 function refrescarEstimacionAlmacen() {
   const leer = (id) => parseInt(document.getElementById(id).value, 10) || 0;
   const ancho = leer('campoNuevoAlmacenAncho');
@@ -1313,6 +1340,7 @@ function abrirContenidoRack(rackId) {
   repintar();
 }
 
+// Cierra el panel lateral del rack y olvida cuál estaba abierto.
 function cerrarContenidoRack() {
   rackAbierto = null;
   document.getElementById('panelContenidoRack').hidden = true;
@@ -1334,6 +1362,8 @@ function refrescarContenidoRack() {
   renderContenidoRack();
 }
 
+// El panel lateral de un rack: nivel por nivel y casillero por casillero, qué
+// modelo guarda cada hueco, con qué tallas y en qué estado.
 function renderContenidoRack() {
   const rack = layoutRacks.find((r) => r.id === rackAbierto);
   if (!rack) return;
@@ -1404,6 +1434,8 @@ function renderContenidoRack() {
   cont.appendChild(niveles);
 }
 
+// Un casillero visto de frente, con su ancho a escala. El color sale del estado
+// de su primera talla; el detalle de cada una está en la lista de al lado.
 function celdaFrente(c, anchoPx) {
   const hay = cajasEn(c);
   const caben = c.capacity_units ?? 0;

@@ -37,6 +37,7 @@ function casilleros(filas) {
   return [...porId.values()];
 }
 
+// Cuántas cajas hay en un casillero, sumando todas sus tallas.
 const cajasEn = (casillero) => casillero.tallas.reduce((suma, t) => suma + (t.unidades ?? 0), 0);
 
 // Lo que se lee antes de mirar el plano: cuántos racks y casilleros hay,
@@ -62,6 +63,7 @@ function renderResumenAlmacen(almacenCode) {
   if (pendientes > 0) cont.appendChild(datoResumen(pendientes, 'por revisar', true));
 }
 
+// Un número grande con su etiqueta debajo, para la fila de resumen.
 function datoResumen(valor, texto, alerta = false) {
   const el = document.createElement('span');
   el.className = 'resumen-dato' + (alerta ? ' alerta' : '');
@@ -71,6 +73,7 @@ function datoResumen(valor, texto, alerta = false) {
   return el;
 }
 
+// Redibuja el plano y el resumen para el almacén elegido en el filtro.
 function aplicarFiltroMapa() {
   const almacen = document.getElementById('filtroMapaAlmacen').value;
   renderResumenAlmacen(almacen);
@@ -80,6 +83,8 @@ function aplicarFiltroMapa() {
   refrescarContenidoRack();
 }
 
+// Recibe el mapa ya cargado y deja lista la pestaña. Se llama una sola vez por
+// carga de datos: el resto de la pantalla trabaja sobre `todoElMapa`.
 function inicializarMapa(mapa) {
   todoElMapa = mapa;
   aplicarFiltroMapa();
@@ -91,6 +96,9 @@ function inicializarMapa(mapa) {
 
 document.getElementById('filtroMapaAlmacen').addEventListener('change', aplicarFiltroMapa);
 
+// Saca una talla de su casillero desde el panel del rack. Liberar corrige el
+// mapa, NO despacha mercadería: el stock no se mueve, solo deja de decirse que
+// esas cajas están ahí.
 async function liberarDesdeElMapa(fila) {
   try {
     await InventarioAPI.liberarPosicion(fila.assignment_id);
@@ -101,6 +109,7 @@ async function liberarDesdeElMapa(fila) {
   }
 }
 
+// Una línea con su acción a la derecha, para las listas de los paneles.
 function lineaConBoton(texto, textoBoton, onClick) {
   const fila = document.createElement('div');
   fila.className = 'linea-ubicacion-actual';
@@ -112,6 +121,21 @@ function lineaConBoton(texto, textoBoton, onClick) {
   boton.textContent = textoBoton;
   boton.addEventListener('click', () => onClick(boton));
   fila.append(etiqueta, boton);
+  return fila;
+}
+
+// Lo comprometido por un movimiento no se libera desde aquí: la línea explica
+// por qué en vez de ofrecer un botón que dejaría al movimiento sin las cajas
+// que espera.
+function lineaSinBoton(texto, motivo) {
+  const fila = document.createElement('div');
+  fila.className = 'linea-ubicacion-actual';
+  const etiqueta = document.createElement('span');
+  etiqueta.textContent = texto;
+  const nota = document.createElement('span');
+  nota.className = 'linea-nota';
+  nota.textContent = motivo;
+  fila.append(etiqueta, nota);
   return fila;
 }
 
@@ -152,6 +176,9 @@ function publicoDelArticulo(articulo) {
   return articulo?.audience ?? articulo?.product?.audience ?? 'ADULTO';
 }
 
+// La regla de alturas, en una línea: infantil abajo, adulto arriba. Es un
+// espejo del trigger fn_validar_publico_por_nivel — quien decide sigue siendo
+// la base; esto solo evita ofrecer huecos que va a rechazar.
 function nivelAdmitePublico(nivel, publico) {
   return publico === 'NINO' ? esNivelInfantil(nivel) : !esNivelInfantil(nivel);
 }
@@ -196,6 +223,8 @@ function pendientePorUbicar(almacenCode, articulo) {
   return { stock, ubicado, falta: Math.max(stock - ubicado, 0), hayRegistro: Boolean(inv) };
 }
 
+// Los racks que tienen algún hueco válido para este artículo, con cuántos. Sin
+// este filtro previo el desplegable de casilleros pasaba de mil opciones.
 function poblarSelectRacks(almacenCode) {
   const select = document.getElementById('campoUbicRack');
   const previo = select.value;
@@ -216,6 +245,8 @@ function poblarSelectRacks(almacenCode) {
   select.value = racks.some(([r]) => r === preferido) ? preferido : '';
 }
 
+// Los casilleros donde este artículo puede ir, con los que ya guardan su modelo
+// primero: juntar tallas del mismo modelo es mejor que estrenar un hueco.
 function poblarSelectPosiciones(almacenCode) {
   const select = document.getElementById('campoUbicPosicion');
   const ayuda = document.getElementById('ayudaUbicPosicion');
@@ -253,15 +284,7 @@ function actualizarPendiente() {
   const almacenCode = document.getElementById('campoUbicAlmacen').value;
   const aviso = document.getElementById('ubicPendiente');
   const cantidad = document.getElementById('campoUbicCantidad');
-  const esReserva = document.getElementById('campoUbicEstado').value === 'RESERVADA';
   const { stock, ubicado, falta, hayRegistro } = pendientePorUbicar(almacenCode, articuloAUbicar);
-
-  if (esReserva) {
-    aviso.textContent = 'Reservar aparta el casillero para mercadería que todavía no llegó: no descuenta del stock.';
-    aviso.classList.remove('hay-pendiente');
-    cantidad.removeAttribute('max');
-    return;
-  }
 
   if (!hayRegistro) {
     aviso.textContent = 'Este artículo no tiene stock registrado en este almacén: primero hace falta una ENTRADA aprobada.';
@@ -279,6 +302,9 @@ function actualizarPendiente() {
   if (falta > 0 && !cantidad.value) cantidad.value = falta;
 }
 
+// Abre "Ubicar" para un artículo: dónde está hoy, cuánto queda por ubicar y
+// dónde puede ir. Ubicar registra mercadería que YA está en el estante; apartar
+// sitio o comprometer cajas lo hace el movimiento (migración 34).
 function abrirModalUbicar(articulo) {
   articuloAUbicar = articulo;
   document.getElementById('formUbicacion').reset();
@@ -294,7 +320,20 @@ function abrirModalUbicar(articulo) {
   document.getElementById('grupoUbicacionActual').hidden = actuales.length === 0;
   for (const a of actuales) {
     const estado = ETIQUETA_OCUPACION[a.estado_ocupacion]?.texto ?? a.estado_ocupacion;
-    lista.appendChild(lineaConBoton(`${a.almacen} · ${a.rack} · ${a.posicion} — ${a.unidades} cajas (${estado})`, 'Liberar', async (boton) => {
+    const texto = `${a.almacen} · ${a.rack} · ${a.posicion} — ${a.unidades} cajas (${estado})`;
+
+    // Reservada o en picking significa que hay un movimiento vivo encima.
+    // Liberarlo lo dejaría sin las cajas que cuenta con encontrar, y el error
+    // saldría después, al ejecutarlo.
+    if (a.estado_ocupacion !== 'OCUPADA') {
+      lista.appendChild(lineaSinBoton(texto,
+        a.estado_ocupacion === 'RESERVADA'
+          ? 'sitio apartado por una entrada: resuélvela primero'
+          : 'comprometida por una salida: resuélvela primero'));
+      continue;
+    }
+
+    lista.appendChild(lineaConBoton(texto, 'Liberar', async (boton) => {
       boton.disabled = true;
       try {
         await InventarioAPI.liberarPosicion(a.assignment_id);
@@ -333,8 +372,9 @@ document.getElementById('campoUbicRack').addEventListener('change', () => {
   poblarSelectPosiciones(document.getElementById('campoUbicAlmacen').value);
 });
 
-document.getElementById('campoUbicEstado').addEventListener('change', actualizarPendiente);
 
+
+// Al cerrar se olvida el artículo, para que la próxima apertura no herede nada.
 function cerrarModalUbicacion() {
   ocultarModal('modalUbicacion');
   articuloAUbicar = null;
@@ -369,7 +409,6 @@ document.getElementById('formUbicacion').addEventListener('submit', async (event
       positionId,
       itemId: articuloAUbicar.id,
       quantity: cantidad,
-      status: document.getElementById('campoUbicEstado').value,
       notes: document.getElementById('campoUbicNotas').value.trim() || null,
     });
 
@@ -419,6 +458,8 @@ const TIPOS_REVISION = {
 
 let revision = [];
 
+// Relee las incidencias de ubicación (v_revision_ubicaciones) y repinta el
+// panel. Se llama tras cada corrección: lo que se ve es lo que la base dice.
 async function refrescarRevision() {
   try {
     revision = await InventarioAPI.listarRevision();
@@ -431,6 +472,8 @@ async function refrescarRevision() {
   renderResumenAlmacen(document.getElementById('filtroMapaAlmacen').value);
 }
 
+// Agrupa las incidencias por tipo. Cada tipo se explica y se puede resolver en
+// bloque, porque suelen venir de la misma causa.
 function renderRevision() {
   const panel = document.getElementById('panelRevision');
   const cont = document.getElementById('listaRevision');
@@ -479,6 +522,7 @@ function renderRevision() {
   }
 }
 
+// Una incidencia concreta, con el botón que la corrige.
 function filaRevision(r, info) {
   const fila = document.createElement('div');
   fila.className = 'reubicacion-fila';
@@ -511,6 +555,8 @@ function filaRevision(r, info) {
   return fila;
 }
 
+// Botón de corrección que se deshabilita mientras trabaja y muestra el
+// resultado: estas acciones mueven cajas y no conviene pulsarlas dos veces.
 function botonRevision(texto, titulo, accion) {
   const boton = document.createElement('button');
   boton.type = 'button';
@@ -534,6 +580,8 @@ function botonRevision(texto, titulo, accion) {
   return boton;
 }
 
+// Corrige de golpe todas las incidencias de un tipo. La base devuelve cuántas
+// pudo y cuáles no con su motivo: las que fallan no se pierden de vista.
 async function resolverTodos(tipo, boton) {
   boton.disabled = true;
   boton.textContent = 'Corrigiendo…';

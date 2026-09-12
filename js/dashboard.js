@@ -46,6 +46,8 @@ function stockDelArticulo(articulo) {
   return { cantidad, filaPrincipal: filas[0] ?? null };
 }
 
+// Las dos pantallas son excluyentes y viven en el mismo HTML: no hay rutas ni
+// recarga de página. Se entra y se sale enseñando una y escondiendo la otra.
 function mostrarLogin() {
   document.getElementById('pantallaLogin').hidden = false;
   document.getElementById('pantallaDashboard').hidden = true;
@@ -83,11 +85,37 @@ botonesTab.forEach((btn, i) => {
   });
 });
 
+// Qué puede hacer quien está mirando. NO es la barrera de seguridad —esa la
+// aplican RLS y fn_exigir_rol en el servidor, y siguen rechazando aunque
+// alguien llame a la API a mano—; esto es para no ofrecer botones que van a
+// fallar. Un auditor veía "Aprobar", "Eliminar" y "Nuevo movimiento", los
+// pulsaba y recibía un error de permisos: el sistema quedaba bien, la
+// pantalla mal.
+let rolActual = null;
+
+const puede = {
+  ubicar:    () => ['OPERARIO', 'SUPERVISOR', 'JEFE'].includes(rolActual),
+  ejecutar:  () => ['OPERARIO', 'SUPERVISOR', 'JEFE'].includes(rolActual),
+  crear:     () => ['SUPERVISOR', 'JEFE'].includes(rolActual),   // artículos y movimientos
+  autorizar: () => ['SUPERVISOR', 'JEFE'].includes(rolActual),   // aprobar y rechazar
+  revertir:  () => rolActual === 'JEFE',
+};
+
+// La barra de arriba, y de paso el punto donde se fija el rol de la sesión: es
+// lo primero que se sabe del usuario, así que aquí se decide qué se le ofrece.
 function renderTopbar(perfil) {
+  rolActual = perfil.role;
+  document.getElementById('btnNuevoArticulo').hidden = !puede.crear();
+  document.getElementById('btnNuevoMovimiento').hidden = !puede.crear();
   document.getElementById('usuarioNombre').textContent = perfil.full_name;
   document.getElementById('usuarioRol').textContent = perfil.role;
+  // La pestaña Equipo aparece o no según el rol (equipo.js).
+  prepararEquipo(perfil);
 }
 
+// Los cinco números de arriba. Se calculan en el cliente sobre los artículos ya
+// cargados en vez de pedirlos a la base: son la misma lista que pinta la tabla,
+// y una segunda consulta podría dar otro resultado si algo cambió entre las dos.
 function renderKpis(articulos, movimientos) {
   const cont = document.getElementById('kpis');
 
@@ -134,6 +162,9 @@ function renderKpis(articulos, movimientos) {
   `;
 }
 
+// Una fila de la tabla de inventario. Devuelve el <tr> ya montado en vez de
+// pegar HTML como texto: los datos vienen de la base y `textContent` no los
+// interpreta, así que un nombre con "<" no puede inyectar marcado.
 function filaArticulo(art) {
   const { cantidad, filaPrincipal } = stockDelArticulo(art);
   const estado = calcularEstadoStock(filaPrincipal);
@@ -179,10 +210,15 @@ function filaArticulo(art) {
   btnUbicar.textContent = 'Ubicar';
   btnUbicar.addEventListener('click', () => abrirModalUbicar(art));
 
-  celdaAcciones.append(btnEditar, btnUbicar, btnEliminar);
+  if (puede.crear()) celdaAcciones.append(btnEditar);
+  if (puede.ubicar()) celdaAcciones.append(btnUbicar);
+  if (puede.crear()) celdaAcciones.append(btnEliminar);
+  if (!celdaAcciones.children.length) celdaAcciones.textContent = '—';
   return tr;
 }
 
+// Repinta la tabla entera. Con 80 artículos es más simple y más seguro que
+// llevar la cuenta de qué fila cambió.
 function renderTabla(articulos, hayFiltrosActivos) {
   const cuerpo = document.getElementById('tablaArticulosBody');
   cuerpo.innerHTML = '';
@@ -203,6 +239,7 @@ function renderTabla(articulos, hayFiltrosActivos) {
   cuerpo.appendChild(fragmento);
 }
 
+// Botón de acción de una fila, con su clase y su manejador ya puestos.
 function crearBotonAccion(texto, onClick) {
   const btn = document.createElement('button');
   btn.className = 'btn-accion';
@@ -247,14 +284,14 @@ function filaMovimiento(mov) {
   `;
 
   const celdaAcciones = tr.querySelector('.acciones');
-  if (mov.situacion === 'PENDIENTE') {
+  if (mov.situacion === 'PENDIENTE' && puede.autorizar()) {
     celdaAcciones.append(
       crearBotonAccion('Aprobar', () => aprobarMovimientoUI(mov)),
       crearBotonAccion('Rechazar', () => solicitarMotivoYRechazar(mov))
     );
-  } else if (mov.situacion === 'APROBADO_SIN_EJECUTAR') {
+  } else if (mov.situacion === 'APROBADO_SIN_EJECUTAR' && puede.ejecutar()) {
     celdaAcciones.append(crearBotonAccion('Ejecutar', () => ejecutarMovimientoUI(mov)));
-  } else if (mov.situacion === 'EJECUTADO') {
+  } else if (mov.situacion === 'EJECUTADO' && puede.revertir()) {
     celdaAcciones.append(crearBotonAccion('Revertir', () => solicitarMotivoYRevertir(mov)));
   } else {
     celdaAcciones.textContent = '—';
@@ -263,6 +300,8 @@ function filaMovimiento(mov) {
   return tr;
 }
 
+// La tabla de movimientos. Las acciones que ofrece cada fila dependen de dos
+// cosas: en qué punto del ciclo está el movimiento y qué rol tiene quien mira.
 function renderMovimientos(movimientos) {
   const cuerpo = document.getElementById('tablaMovimientosBody');
   cuerpo.innerHTML = '';
@@ -295,6 +334,9 @@ function publicoDe(art) {
   return art.audience ?? art.product?.audience ?? null;
 }
 
+// Texto comparable: minúsculas y sin tildes, para que "botin" encuentre
+// "botín" y al revés. Buscar en un almacén peruano sin esto obliga a acertar
+// la tilde.
 function normalizar(texto) {
   return (texto ?? '')
     .toString()
@@ -322,6 +364,9 @@ function poblarSelectDesdeArticulos(id, obtenerValor) {
   sincronizarSelectMejorado(id);
 }
 
+// Aplica el buscador y los cuatro filtros sobre la lista ya cargada. Filtrar en
+// el cliente y no en la base es deliberado: son 80 artículos, la respuesta es
+// instantánea y no se castiga a la red con una consulta por tecla.
 function aplicarFiltros() {
   const texto = normalizar(document.getElementById('filtroTexto').value.trim());
   const categoria = document.getElementById('filtroCategoria').value;
@@ -352,6 +397,8 @@ function aplicarFiltros() {
   renderTabla(filtrados, hayFiltrosActivos);
 }
 
+// Guarda la lista y llena las opciones de los filtros con lo que de verdad hay:
+// escritas a mano, una categoría nueva no aparecería nunca.
 function inicializarFiltros(articulos) {
   todosLosArticulos = articulos;
 
@@ -385,6 +432,9 @@ for (const id of ['filtroCategoria', 'filtroProveedor', 'filtroPublico', 'filtro
   mejorarSelect(id);
 }
 
+// El arranque: perfil, permisos, datos y primer pintado. Todo lo que se pide a
+// la base entra por aquí; el resto de la pantalla trabaja sobre lo ya cargado y
+// vuelve a pedirlo solo cuando algo cambia (recargarArticulos).
 async function cargarDashboard() {
   const perfil = await AuthAPI.obtenerPerfilActual();
   if (!perfil) {
@@ -459,6 +509,21 @@ document.getElementById('formLogin').addEventListener('submit', async (evento) =
 document.getElementById('btnSalir').addEventListener('click', async () => {
   await AuthAPI.cerrarSesion();
   mostrarLogin();
+});
+
+// La sesion puede caerse sin que nadie pulse "Salir": el token caduca, o se
+// cierra sesion en otra pestana. Sin escuchar esto, el dashboard se quedaba en
+// pantalla con los datos ya cargados y cada accion fallaba con "permission
+// denied for table ..." — un error cierto, porque sin sesion el cliente pasa a
+// ser `anon` y la migracion 03 le revoca todo, pero incomprensible para quien
+// lo ve.
+AuthAPI.onCambioSesion((evento, sesion) => {
+  if (sesion) return;                       // sigue habiendo sesion: nada que hacer
+  if (document.getElementById('pantallaLogin').hidden === false) return; // ya estamos en el login
+  mostrarLogin();
+  if (evento !== 'SIGNED_OUT') {
+    mostrarToast('Tu sesion caduco. Vuelve a iniciar sesion.', 'error');
+  }
 });
 
 (async function init() {

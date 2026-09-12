@@ -41,6 +41,35 @@ const AuthAPI = {
     return data;
   },
 
+  // El equipo completo. La política p_profiles_select deja leerlo a cualquier
+  // usuario con rol (el dashboard necesita resolver "aprobado por Ana Jefa"),
+  // pero la sección Equipo solo se le muestra al jefe: es el único que puede
+  // cambiar algo de aquí.
+  async listarMiembros() {
+    const { data, error } = await supabaseClient
+      .from('profiles')
+      .select('id, full_name, email, role, is_active, max_movement_qty, created_at')
+      .order('full_name');
+
+    if (error) throw error;
+    return data;
+  },
+
+  // Cambiar rol, tope o alta/baja. Quien no sea JEFE es rechazado dos veces:
+  // por la política p_profiles_update y por el trigger
+  // trg_profiles_no_autoascenso, que además impide subirse el rol a uno mismo.
+  async actualizarMiembro(id, cambios) {
+    const { data, error } = await supabaseClient
+      .from('profiles')
+      .update(cambios)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  },
+
   // callback(evento, sesion) — usar para redirigir a login al cerrar sesión,
   // o refrescar la UI cuando el usuario inicia sesión en otra pestaña.
   onCambioSesion(callback) {

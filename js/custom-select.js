@@ -38,10 +38,16 @@ function mejorarSelect(id) {
 
   let indiceActivo = -1;
 
+  // Las opciones se leen del DOM cada vez y no se guardan: la lista se
+  // reconstruye entera cuando cambia el <select> nativo, y una referencia
+  // guardada apuntaría a nodos que ya no existen.
   function opciones() {
     return [...lista.querySelectorAll('.dselect-opcion')];
   }
 
+  // Vuelca el <select> nativo en la lista visible. Es el único punto donde se
+  // copian las opciones, así que se llama después de cada cambio: al abrir, al
+  // elegir, y cuando quien usa el componente repuebla el select.
   function reconstruir() {
     lista.innerHTML = '';
     [...nativo.options].forEach((opt) => {
@@ -60,6 +66,9 @@ function mejorarSelect(id) {
     indiceActivo = opciones().findIndex((li) => li.classList.contains('activa'));
   }
 
+  // Elegir escribe en el <select> nativo y dispara su evento 'change'. El resto
+  // de la aplicación escucha ahí y no sabe que este componente existe: si algún
+  // día se quita, los formularios siguen funcionando.
   function seleccionar(valor) {
     nativo.value = valor;
     nativo.dispatchEvent(new Event('change', { bubbles: true }));
@@ -68,6 +77,8 @@ function mejorarSelect(id) {
     boton.focus();
   }
 
+  // Mueve el resaltado del teclado. Es distinto de la opción seleccionada: se
+  // navega con las flechas sin elegir nada hasta pulsar Enter.
   function resaltar(indice) {
     const nodos = opciones();
     nodos.forEach((li) => li.classList.remove('resaltada'));
@@ -78,6 +89,8 @@ function mejorarSelect(id) {
     indiceActivo = indice;
   }
 
+  // Al abrir, el resaltado arranca en la opción activa y no en la primera, para
+  // que las flechas sigan desde donde uno está.
   function abrir() {
     lista.hidden = false;
     boton.setAttribute('aria-expanded', 'true');
@@ -85,6 +98,7 @@ function mejorarSelect(id) {
     resaltar(activa >= 0 ? activa : 0);
   }
 
+  // Cerrar no toca el valor: se sale igual con Escape que eligiendo.
   function cerrar() {
     lista.hidden = true;
     boton.setAttribute('aria-expanded', 'false');

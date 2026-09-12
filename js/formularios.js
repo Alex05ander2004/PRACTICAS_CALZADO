@@ -86,8 +86,24 @@ const MENSAJES_DE_RESTRICCION = {
   ck_products_audience:        'El público del modelo tiene que ser adulto o niño.',
 };
 
+// Convierte lo que responde Postgres en algo que se pueda leer. Solo traduce
+// lo que un usuario puede provocar desde un formulario; el resto pasa tal cual,
+// porque inventar un mensaje para algo imprevisto esconde el problema.
 function traducirError(err, respaldo = 'No se pudo completar la acción.') {
   const texto = err?.message ?? '';
+
+  // PostgREST responde esto cuando un UPDATE con .single() no encuentra fila:
+  // o el registro ya no está, o RLS lo filtró porque este rol no puede tocarlo.
+  // Tal cual ("Cannot coerce the result to a single JSON object") no le dice
+  // nada a nadie, y es justo lo que ve un auditor al intentar escribir.
+  if (err?.code === 'PGRST116' || texto.includes('Cannot coerce the result to a single JSON object')) {
+    return 'No se pudo aplicar el cambio: o el registro ya no existe, o tu rol no permite modificarlo.';
+  }
+
+  // Y este es el mismo caso en un INSERT: la política de la tabla lo rechaza.
+  if (texto.includes('violates row-level security policy')) {
+    return 'Tu rol no permite crear este registro.';
+  }
   for (const [restriccion, mensaje] of Object.entries(MENSAJES_DE_RESTRICCION)) {
     if (texto.includes(restriccion)) return mensaje;
   }

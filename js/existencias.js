@@ -18,6 +18,8 @@ const tomar = (mapa, clave, crear) => {
   return mapa.get(clave);
 };
 
+// El nombre bonito del almacén. Cae al código si el layout todavía no cargó:
+// mejor "ALM-A" que un hueco en blanco.
 function nombreDeAlmacen(code) {
   return layoutAlmacenes.find((a) => a.code === code)?.name ?? code;
 }
@@ -45,7 +47,13 @@ function agruparExistencias(filas) {
 
     const unidades = f.unidades ?? 0;
     const talla = f.talla ?? '—';
-    modelo.tallas.set(talla, (modelo.tallas.get(talla) ?? 0) + unidades);
+    // Una misma talla puede estar en dos casilleros con estados distintos, así
+    // que se guarda el conjunto: si alguno está comprometido, la talla lo está
+    // en parte, y eso es lo que hay que poder ver.
+    const previo = modelo.tallas.get(talla) ?? { pares: 0, estados: new Set() };
+    previo.pares += unidades;
+    previo.estados.add(f.estado_ocupacion);
+    modelo.tallas.set(talla, previo);
     modelo.casilleros.add(f.posicion);
     modelo.skus.add(f.sku);
     if (f.level != null) modelo.niveles.add(f.level);
@@ -72,7 +80,23 @@ function porModelo(modelo, t) {
     || (codigo !== '' && t.startsWith(codigo));
 }
 
+// Coincidencia EXACTA de talla, no "contiene": buscar 40 no debe traer la 40.5.
 const porTalla = (modelo, t) => [...modelo.tallas.keys()].some((talla) => String(talla).toLowerCase() === t);
+
+// Filtro por estado del casillero. COMPROMETIDO junta los dos que no son
+// stock disponible sin más, que es como se suelen mirar.
+let estadoExistencias = '';
+
+function coincideEstado(modelo) {
+  if (!estadoExistencias) return true;
+  const estados = new Set();
+  for (const dato of modelo.tallas.values()) for (const e of dato.estados) estados.add(e);
+  if (estadoExistencias === 'COMPROMETIDO') {
+    return estados.has('RESERVADA') || estados.has('EN_PICKING');
+  }
+  return estados.has(estadoExistencias);
+}
+// El casillero sí se busca por fragmento: "A-07" trae todo ese rack.
 const porCasillero = (modelo, t) => [...modelo.casilleros].some((c) => (c ?? '').toLowerCase().includes(t));
 
 // "Dónde" son tres niveles del mismo eje: almacén, rack y casillero. El código
@@ -87,6 +111,8 @@ function coincideUbicacion(rack, alm) {
     || (alm.nombre ?? '').toLowerCase().includes(t);
 }
 
+// Decide si un modelo pasa el buscador, según el ámbito elegido. Sin ámbito,
+// "40" mezclaba la talla 40 con el modelo ZAP-040 y con todo SKU acabado en -40.
 function coincideExistencia(modelo) {
   if (!filtroExistencias) return true;
   const t = filtroExistencias;
@@ -97,6 +123,7 @@ function coincideExistencia(modelo) {
     || [...modelo.skus].some((sku) => (sku ?? '').toLowerCase().includes(t));
 }
 
+// Un trozo de texto de la fila, con su clase. Se usa para todas las columnas.
 function dato(texto, clase = 'exis-datos') {
   const el = document.createElement('span');
   el.className = clase;
@@ -104,6 +131,9 @@ function dato(texto, clase = 'exis-datos') {
   return el;
 }
 
+// La línea de un modelo dentro de un rack: código, nombre, sus tallas con las
+// cantidades, el total y dónde está. Las tallas comprometidas salen marcadas
+// con el mismo color que el plano.
 function filaModelo(modelo) {
   const fila = document.createElement('div');
   fila.className = 'exis-modelo';
@@ -115,11 +145,21 @@ function filaModelo(modelo) {
 
   const tallas = document.createElement('span');
   tallas.className = 'exis-tallas';
-  for (const [talla, pares] of [...modelo.tallas].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }))) {
+  for (const [talla, info] of [...modelo.tallas].sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }))) {
+    const pares = info.pares;
     // "talla 40 · 26" y no "40×26": el segundo número necesita que el primero
     // se lea como talla, o parecen dos medidas.
     const etiqueta = dato(`talla ${talla} · ${pares}`, 'exis-talla');
     etiqueta.title = `${pares} pares de la talla ${talla}`;
+    // El estado del casillero, con el mismo color que el plano.
+    const comprometido = info.estados.has('EN_PICKING') ? 'en_picking'
+                       : info.estados.has('RESERVADA')  ? 'reservada' : '';
+    if (comprometido) {
+      etiqueta.classList.add(comprometido);
+      etiqueta.title = comprometido === 'en_picking'
+        ? 'Comprometido: hay una salida esperando sobre este casillero'
+        : 'Reservado: sitio apartado para mercadería que todavía no llegó';
+    }
     tallas.appendChild(etiqueta);
   }
   fila.appendChild(tallas);
@@ -133,6 +173,9 @@ function filaModelo(modelo) {
   return fila;
 }
 
+// Dibuja el árbol entero almacén → rack → modelo aplicando los filtros. Un
+// almacén sin nada también aparece: que esté vacío es información, y no verlo
+// haría pensar que no existe.
 function renderExistencias() {
   const cont = document.getElementById('listaExistencias');
   if (!cont) return;
@@ -157,7 +200,7 @@ function renderExistencias() {
       .map((rack) => {
         const entero = coincideUbicacion(rack, alm);
         const lista = [...rack.modelos.values()]
-          .filter((m) => entero || coincideExistencia(m))
+          .filter((m) => (entero || coincideExistencia(m)) && coincideEstado(m))
           .sort((a, b) => b.pares - a.pares);
         return { rack, lista };
       })
@@ -244,6 +287,11 @@ document.getElementById('ambitoExistencias').addEventListener('change', (e) => {
   renderExistencias();
 });
 
+document.getElementById('estadoExistencias').addEventListener('change', (e) => {
+  estadoExistencias = e.target.value;
+  renderExistencias();
+});
+
 document.getElementById('buscarExistencias').addEventListener('input', (e) => {
   textoBuscado = e.target.value.trim();
   filtroExistencias = textoBuscado.toLowerCase();
@@ -252,7 +300,9 @@ document.getElementById('buscarExistencias').addEventListener('input', (e) => {
 
 document.getElementById('btnLimpiarExistencias').addEventListener('click', () => {
   document.getElementById('buscarExistencias').value = '';
+  document.getElementById('estadoExistencias').value = '';
   textoBuscado = '';
   filtroExistencias = '';
+  estadoExistencias = '';
   renderExistencias();
 });

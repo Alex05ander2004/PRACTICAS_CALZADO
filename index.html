@@ -60,6 +60,8 @@
         <button type="button" class="tab-btn" role="tab" id="tabMovimientos" aria-controls="seccionMovimientos" aria-selected="false" tabindex="-1">Movimientos</button>
         <button type="button" class="tab-btn" role="tab" id="tabMapa" aria-controls="seccionMapa" aria-selected="false" tabindex="-1">Mapa del almacén</button>
         <button type="button" class="tab-btn" role="tab" id="tabExistencias" aria-controls="seccionExistencias" aria-selected="false" tabindex="-1">Existencias</button>
+        <!-- Solo para el jefe: lo enseña equipo.js según el rol. -->
+        <button type="button" class="tab-btn" role="tab" id="tabEquipo" aria-controls="seccionEquipo" aria-selected="false" tabindex="-1" hidden>Equipo</button>
       </nav>
 
       <section id="seccionTabla" role="tabpanel" aria-labelledby="tabInventario">
@@ -309,10 +311,60 @@
             <option value="talla">Solo talla</option>
             <option value="ubicacion">Solo ubicación</option>
           </select>
+          <!-- Lo reservado y lo comprometido no se veían en ninguna lista: solo
+               por color en el plano. Aquí se pueden aislar. -->
+          <select id="estadoExistencias" class="filtro-select" aria-label="Estado del casillero">
+            <option value="">Estado: todos</option>
+            <option value="OCUPADA">Solo ocupados</option>
+            <option value="RESERVADA">Solo reservados</option>
+            <option value="EN_PICKING">Solo en picking</option>
+            <option value="COMPROMETIDO">Reservados y en picking</option>
+          </select>
           <button type="button" id="btnLimpiarExistencias" class="btn-secundario btn-chico">Limpiar</button>
         </div>
         <p id="contadorExistencias" class="contador-resultados" role="status" aria-live="polite"></p>
         <div id="listaExistencias" class="exis-lista"></div>
+      </section>
+
+      <section id="seccionEquipo" role="tabpanel" aria-labelledby="tabEquipo" hidden>
+        <div class="section-header">
+          <h2 class="section-titulo">Equipo</h2>
+        </div>
+        <p class="seccion-nota">
+          Quién trabaja en el almacén y qué puede hacer cada uno. Los cambios son inmediatos:
+          el rol decide qué acepta la base de datos, no solo qué botones se ven.
+        </p>
+
+        <p id="contadorEquipo" class="contador-resultados" role="status" aria-live="polite"></p>
+
+        <div class="tabla-wrap">
+          <table>
+            <colgroup>
+              <col style="width: 22%" />
+              <col style="width: 26%" />
+              <col style="width: 18%" />
+              <col style="width: 12%" />
+              <col style="width: 11%" />
+              <col style="width: 11%" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Correo</th>
+                <th>Rol</th>
+                <th>Tope de aprobación</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tablaEquipoBody">
+              <tr><td colspan="6" class="skeleton">Cargando equipo…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="section-subtitulo">Qué puede hacer cada rol</h3>
+        <div id="permisosPorRol" class="permisos-grid"></div>
       </section>
     </main>
   </div>
@@ -604,19 +656,13 @@
         <p id="ayudaUbicPosicion" class="campo-ayuda"></p>
       </div>
 
-      <div class="fila-2">
-        <div class="campo">
-          <label for="campoUbicEstado">Asignar como</label>
-          <select id="campoUbicEstado">
-            <option value="OCUPADA">Ocupada (stock ya ubicado ahí)</option>
-            <option value="RESERVADA">Reservada (espacio para un INBOUND)</option>
-            <option value="EN_PICKING">En picking (preparando un OUTBOUND)</option>
-          </select>
-        </div>
-        <div class="campo">
-          <label for="campoUbicCantidad">Cantidad</label>
-          <input id="campoUbicCantidad" type="number" min="1" step="1" required />
-        </div>
+      <div class="campo">
+        <label for="campoUbicCantidad">Cantidad</label>
+        <input id="campoUbicCantidad" type="number" min="1" step="1" required />
+        <p class="campo-ayuda">
+          Registra cajas que ya están en el estante. Apartar sitio o comprometer mercadería
+          no se hace aquí: el casillero se marca solo al crear la entrada o la salida.
+        </p>
       </div>
 
       <div class="campo">
@@ -757,5 +803,6 @@
   <script src="js/mapa-modal.js"></script>
   <script src="js/plano-editor.js"></script>
   <script src="js/existencias.js"></script>
+  <script src="js/equipo.js"></script>
 </body>
 </html>

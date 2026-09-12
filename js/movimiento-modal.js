@@ -22,6 +22,8 @@ function abrirModalMovimiento() {
   mostrarModal('modalMovimiento');
 }
 
+// El formulario no se limpia aquí sino al abrirlo: si el guardado falla, lo
+// escrito sigue estando al volver a intentarlo.
 function cerrarModalMovimiento() {
   ocultarModal('modalMovimiento');
 }
@@ -71,7 +73,8 @@ function poblarCasillerosMovimiento() {
     for (const c of casillerosDisponiblesPara(almacenCode, articulo)) {
       select.add(new Option(`${c.rack} · ${c.posicion} (nivel ${c.level}) — caben ${c.libre} más`, c.position_id));
     }
-    ayuda.textContent = 'Con un casillero elegido, al ejecutar la entrada las cajas quedan ubicadas ahí.';
+    ayuda.textContent = 'El casillero se reserva al crear el movimiento y pasa a ocupado al ejecutarlo. '
+      + 'Sin casillero, la mercadería queda en recepción para ubicarla después.';
     return;
   }
 
@@ -82,7 +85,7 @@ function poblarCasillerosMovimiento() {
     select.add(new Option(`Recepción, sin ubicar — hay ${sinUbicar}`, ''));
   }
   ayuda.textContent = tipo === 'SALIDA'
-    ? 'Al ejecutar la salida, las cajas se descuentan de este casillero.'
+    ? 'El casillero queda en picking hasta que la salida se ejecute o se rechace.'
     : 'Un ajuste con casillero corrige también lo que hay en ese estante.';
 }
 
@@ -193,6 +196,9 @@ async function aprobarMovimientoUI(mov) {
   }
 }
 
+// Ejecutar es confirmar que la mercadería se movió de verdad. Aquí no se pide
+// motivo —la orden ya estaba autorizada— y el error de la base se muestra tal
+// cual: si dice que en el casillero no hay tantas cajas, es información real.
 async function ejecutarMovimientoUI(mov) {
   try {
     await MovimientosAPI.ejecutar(mov.id);
@@ -203,6 +209,8 @@ async function ejecutarMovimientoUI(mov) {
   }
 }
 
+// El motivo es opcional al rechazar: a veces basta con que el supervisor diga
+// que no. Queda en las notas del movimiento, que no se borra nunca.
 function solicitarMotivoYRechazar(mov) {
   abrirModalMotivo({
     titulo: 'Rechazar movimiento',
@@ -217,6 +225,9 @@ function solicitarMotivoYRechazar(mov) {
   });
 }
 
+// Revertir sí exige motivo, y por eso `requerido: true`: es la operación de
+// excepción del sistema —deshace algo que ya afectó al stock— y sin explicación
+// el kardex no diría por qué hay un contra-asiento.
 function solicitarMotivoYRevertir(mov) {
   abrirModalMotivo({
     titulo: 'Revertir movimiento',

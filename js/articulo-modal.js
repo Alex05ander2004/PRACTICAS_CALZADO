@@ -11,11 +11,16 @@ let catalogosCache = null;
 const NUEVO_PROVEEDOR = '__NUEVO__';
 let articuloEnEdicion = null; // null = creando; objeto de CatalogoAPI.listarArticulos() = editando
 
+// Un campo numérico vacío es NULL, no 0: "sin peso declarado" y "pesa cero" no
+// son lo mismo, y la base distingue los dos.
 function parseFloatOrNull(valor) {
   const n = parseFloat(valor);
   return Number.isFinite(n) ? n : null;
 }
 
+// Marcas, categorías, proveedores y productos, una sola vez por apertura del
+// modal. La caché se invalida (catalogosCache = null) cuando se crea algo que
+// tendría que aparecer en esas listas.
 async function cargarCatalogosSiHaceFalta() {
   if (catalogosCache) return catalogosCache;
   const [marcas, categorias, proveedores, productos, codigosUsados] = await Promise.all([
@@ -29,6 +34,8 @@ async function cargarCatalogosSiHaceFalta() {
   return catalogosCache;
 }
 
+// Llena un <select> con id/nombre. Los productos se muestran como
+// "ZAP-001 — Nike Pegasus" porque el código es lo que se busca a ojo.
 function poblarSelectSimple(id, items, { placeholder } = {}) {
   const select = document.getElementById(id);
   select.innerHTML = '';
@@ -66,10 +73,13 @@ function poblarProveedores(proveedores) {
 const CAMPOS_DEL_MODELO = ['campoModelCode', 'campoMarca', 'campoNombre',
                            'campoCategoria', 'campoProveedor', 'campoDescripcion'];
 
+// Al agregarle una talla a un modelo que ya existe, sus datos se ven pero no se
+// tocan: cambiarlos aquí afectaría a todas las demás tallas sin avisar.
 function bloquearCamposDelModelo(bloquear) {
   for (const id of CAMPOS_DEL_MODELO) document.getElementById(id).disabled = bloquear;
 }
 
+// Enseña u oculta los campos que definen el modelo.
 function mostrarBloqueDefinicionProducto(mostrar) {
   document.getElementById('bloqueModeloMarca').hidden = !mostrar;
   document.getElementById('grupoNombre').hidden = !mostrar;
@@ -128,6 +138,9 @@ function tallaRepetida() {
   return lista.find((a) => a.sku === sku && a.id !== articuloEnEdicion?.id) ?? null;
 }
 
+// Vender por debajo del costo casi siempre es un dedazo (un 9 por un 90), así
+// que se avisa al escribirlo y no al guardar. Costo igual a precio sí pasa:
+// margen cero es raro, pero no es un error.
 function avisarSiElCostoSupera() {
   const costo = parseFloatOrNull(document.getElementById('campoCosto').value);
   const precio = parseFloatOrNull(document.getElementById('campoPrecio').value);
@@ -138,6 +151,9 @@ function avisarSiElCostoSupera() {
   return mal;
 }
 
+// Repetir una talla que el modelo ya tiene es el error fácil de cometer. Se
+// avisa junto al SKU en cuanto se escribe, en vez de dejar que reviente contra
+// el índice al guardar.
 function avisarSiLaTallaYaExiste() {
   const repetida = tallaRepetida();
   const ayuda = document.getElementById('ayudaSku');
@@ -193,6 +209,9 @@ function precargarDesdeProducto() {
   derivarSku();
 }
 
+// Cambia el formulario entre "producto existente" y "producto nuevo". Los
+// campos del modelo se ven en los dos casos —esconderlos dejaba la duda de a
+// qué modelo se le está agregando la talla—, pero solo se editan en el nuevo.
 function actualizarVisibilidadPorModo() {
   if (articuloEnEdicion) return; // al editar, el modo no aplica: siempre se ve todo
 
@@ -234,17 +253,23 @@ document.querySelectorAll('input[name="modoProducto"]').forEach((radio) => {
 // debe volver cuando se cierra el ÚLTIMO, no el primero que se cierre.
 let modalesAbiertos = 0;
 
+// Abre un modal y le da el foco, para que quien navega con teclado no se quede
+// escribiendo detrás.
 function mostrarModal(id) {
   document.getElementById(id).hidden = false;
   modalesAbiertos += 1;
   document.body.style.overflow = 'hidden';
 }
+// Cierra un modal.
 function ocultarModal(id) {
   document.getElementById(id).hidden = true;
   modalesAbiertos = Math.max(0, modalesAbiertos - 1);
   if (modalesAbiertos === 0) document.body.style.overflow = '';
 }
 
+// Deja el formulario en blanco antes de reutilizarlo: el mismo modal sirve para
+// crear y para editar, y un valor heredado de la apertura anterior se guardaría
+// sin que nadie lo haya escrito.
 function limpiarFormulario() {
   document.getElementById('formArticulo').reset();
   document.getElementById('modalArticuloError').hidden = true;
@@ -252,6 +277,8 @@ function limpiarFormulario() {
   document.getElementById('campoStockMinimo').value = 5;
 }
 
+// Alta de artículo. Arranca en "producto existente", que es el caso habitual:
+// casi siempre se añade una talla a un modelo que ya se vende.
 async function abrirModalCrear() {
   articuloEnEdicion = null;
   limpiarFormulario();
@@ -273,6 +300,8 @@ async function abrirModalCrear() {
   mostrarModal('modalArticulo');
 }
 
+// Edición. Recibe el artículo entero, no su id: la fila ya viene cargada en la
+// tabla y volver a pedirla solo añadiría una espera.
 async function abrirModalEditar(articulo) {
   articuloEnEdicion = articulo;
   limpiarFormulario();
@@ -326,6 +355,8 @@ async function abrirModalEditar(articulo) {
   mostrarModal('modalArticulo');
 }
 
+// Cierra y olvida el artículo en edición, que es lo que distingue el modo alta
+// del modo edición en el resto del archivo.
 function cerrarModalArticulo() {
   ocultarModal('modalArticulo');
   articuloEnEdicion = null;
