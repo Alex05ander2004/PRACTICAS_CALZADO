@@ -195,9 +195,12 @@ const InventarioAPI = {
     return data;
   },
 
-  // Único camino para que exista una fila de inventory (RLS no da INSERT
-  // directo — ver migración 06). warehouseCode es el código de un almacén
-  // existente; la lista sale de obtenerLayout(), no de una constante.
+  // Registrar un artículo que ya existe en otro almacén. El alta de un
+  // artículo nuevo NO pasa por aquí: va por crearArticuloConInventario, que
+  // crea el artículo y su inventario en la misma transacción (migración 26).
+  // RLS no da INSERT directo sobre inventory, así que este es el único camino.
+  // warehouseCode es el código de un almacén existente; la lista sale de
+  // obtenerLayout(), no de una constante.
   async crearRegistroInventario({ itemId, warehouseCode, quantity = 0, minStock = 0, maxStock = null }) {
     const { data, error } = await supabaseClient.rpc('crear_registro_inventario', {
       p_item_id: itemId,

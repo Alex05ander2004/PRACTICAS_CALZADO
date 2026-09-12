@@ -5,6 +5,10 @@
 // desde los botones de cada fila.
 
 let catalogosCache = null;
+
+// Valor de la opción "+ Nuevo proveedor…". No es un id, así que no puede
+// chocar con uno real.
+const NUEVO_PROVEEDOR = '__NUEVO__';
 let articuloEnEdicion = null; // null = creando; objeto de CatalogoAPI.listarArticulos() = editando
 
 function parseFloatOrNull(valor) {
@@ -14,13 +18,14 @@ function parseFloatOrNull(valor) {
 
 async function cargarCatalogosSiHaceFalta() {
   if (catalogosCache) return catalogosCache;
-  const [marcas, categorias, proveedores, productos] = await Promise.all([
+  const [marcas, categorias, proveedores, productos, codigosUsados] = await Promise.all([
     CatalogoAPI.listarMarcas(),
     CatalogoAPI.listarCategorias(),
     CatalogoAPI.listarProveedores(),
     CatalogoAPI.listarProductos(),
+    CatalogoAPI.codigosDeModeloUsados(),
   ]);
-  catalogosCache = { marcas, categorias, proveedores, productos };
+  catalogosCache = { marcas, categorias, proveedores, productos, codigosUsados };
   return catalogosCache;
 }
 
@@ -41,7 +46,29 @@ function poblarSelectSimple(id, items, { placeholder } = {}) {
   }
 }
 
+// El proveedor sale de la lista, o se da de alta en el momento. La opción va
+// al final: es la excepción, no lo que se elige a diario.
+function poblarProveedores(proveedores) {
+  poblarSelectSimple('campoProveedor', proveedores, { placeholder: 'Sin proveedor' });
+  const select = document.getElementById('campoProveedor');
+  const opt = document.createElement('option');
+  opt.value = NUEVO_PROVEEDOR;
+  opt.textContent = '+ Nuevo proveedor…';
+  select.appendChild(opt);
+}
+
 // --- Mostrar/ocultar bloques según el modo ---------------------------------
+
+// Los datos del modelo (código, marca, nombre, categoría, proveedor, público)
+// no se esconden cuando se agrega una talla a un producto que ya existe: se
+// muestran cargados y bloqueados. Esconderlos dejaba la duda de a qué modelo
+// se le estaba agregando la talla.
+const CAMPOS_DEL_MODELO = ['campoModelCode', 'campoMarca', 'campoNombre',
+                           'campoCategoria', 'campoProveedor', 'campoDescripcion'];
+
+function bloquearCamposDelModelo(bloquear) {
+  for (const id of CAMPOS_DEL_MODELO) document.getElementById(id).disabled = bloquear;
+}
 
 function mostrarBloqueDefinicionProducto(mostrar) {
   document.getElementById('bloqueModeloMarca').hidden = !mostrar;
@@ -50,13 +77,150 @@ function mostrarBloqueDefinicionProducto(mostrar) {
   document.getElementById('grupoDescripcion').hidden = !mostrar;
 }
 
+// El primer ZAP libre. Se busca el primer hueco y no el siguiente al último:
+// si alguna vez se borra un modelo del medio, su número vuelve a estar
+// disponible y no tiene sentido saltárselo. Queda editable: es una propuesta,
+// no una imposición.
+function siguienteCodigoDeModelo() {
+  const usados = new Set(
+    (catalogosCache?.codigosUsados ?? [])
+      .filter((c) => /^ZAP-[0-9]+$/.test(c))
+      .map((c) => parseInt(c.slice(4), 10)));
+
+  let n = 1;
+  while (usados.has(n)) n += 1;
+  return `ZAP-${String(n).padStart(3, '0')}`;
+}
+
+// Rango de tallas y caja estándar de cada público. La caja es la misma que usa
+// el cálculo de capacidad (fn_medidas_caja), en centímetros.
+const PUBLICOS = {
+  NINO:   { etiqueta: 'niño',   min: 20, max: 34, largo: 22, ancho: 15, alto: 9,  peso: 0.6 },
+  ADULTO: { etiqueta: 'adulto', min: 35, max: 48, largo: 35, ancho: 25, alto: 13, peso: 0.9 },
+};
+
+// El SKU de los 80 artículos que hay es el código de modelo más la talla, así
+// que se arma solo en vez de dejar que se escriba distinto.
+function derivarSku() {
+  const talla = document.getElementById('campoTalla').value.trim();
+  const modo = document.querySelector('input[name="modoProducto"]:checked')?.value ?? 'EXISTENTE';
+  let modelo = document.getElementById('campoModelCode').value.trim();
+
+  if (!articuloEnEdicion && modo === 'EXISTENTE') {
+    const id = document.getElementById('campoProducto').value;
+    modelo = catalogosCache?.productos.find((p) => p.id === id)?.model_code ?? '';
+  }
+  // La media talla se escribe 31.5, pero el SKU no admite el punto
+  // (inventory_items exige '^[A-Z0-9]+(-[A-Z0-9]+)+$'), así que va con guion:
+  // ZAP-059-31-5.
+  document.getElementById('campoSku').value =
+    modelo && talla ? `${modelo}-${talla.replace('.', '-')}` : '';
+  avisarSiLaTallaYaExiste();
+}
+
+// Repetir una talla que el modelo ya tiene es el error fácil de cometer, y la
+// base lo rechaza con el nombre de un índice. Se avisa en cuanto se escribe,
+// junto al campo, en vez de esperar a que falle el guardado.
+function tallaRepetida() {
+  const lista = typeof todosLosArticulos !== 'undefined' ? todosLosArticulos : [];
+  const sku = document.getElementById('campoSku').value;
+  if (!sku) return null;
+  return lista.find((a) => a.sku === sku && a.id !== articuloEnEdicion?.id) ?? null;
+}
+
+function avisarSiElCostoSupera() {
+  const costo = parseFloatOrNull(document.getElementById('campoCosto').value);
+  const precio = parseFloatOrNull(document.getElementById('campoPrecio').value);
+  const mal = costo != null && precio != null && costo > precio;
+  const ayuda = document.getElementById('ayudaPrecio');
+  ayuda.textContent = mal ? 'El precio no puede ser menor que el costo.' : '';
+  ayuda.classList.toggle('campo-ayuda-error', mal);
+  return mal;
+}
+
+function avisarSiLaTallaYaExiste() {
+  const repetida = tallaRepetida();
+  const ayuda = document.getElementById('ayudaSku');
+  ayuda.textContent = repetida
+    ? `Ese modelo ya tiene la talla ${repetida.size_label} (${repetida.sku}).`
+    : 'Se arma solo con el modelo y la talla.';
+  ayuda.classList.toggle('campo-ayuda-error', Boolean(repetida));
+}
+
+// Al cambiar de público cambian el rango de tallas y la caja. Las medidas solo
+// se pisan si están vacías o si son las del otro público: si alguien puso una
+// medida a mano, se respeta.
+function aplicarPublico() {
+  const publico = PUBLICOS[document.getElementById('campoPublico').value] ?? PUBLICOS.ADULTO;
+  const otro = publico === PUBLICOS.NINO ? PUBLICOS.ADULTO : PUBLICOS.NINO;
+
+  const talla = document.getElementById('campoTalla');
+  talla.min = publico.min;
+  talla.max = publico.max;
+  talla.title = `Talla de ${publico.etiqueta}: entre ${publico.min} y ${publico.max}`;
+  document.getElementById('ayudaPublico').textContent =
+    `Tallas de ${publico.min} a ${publico.max}. Caja de ${publico.largo}×${publico.ancho}×${publico.alto} cm.`;
+
+  for (const [id, valor, delOtro] of [
+    ['campoLargo', publico.largo, otro.largo],
+    ['campoAncho', publico.ancho, otro.ancho],
+    ['campoAlto', publico.alto, otro.alto],
+    ['campoPeso', publico.peso, otro.peso],
+  ]) {
+    const campo = document.getElementById(id);
+    if (campo.value === '' || Number(campo.value) === delOtro) campo.value = valor;
+  }
+}
+
+// Agregar una talla a un modelo que ya existe: se copian sus datos para verlos.
+function precargarDesdeProducto() {
+  const id = document.getElementById('campoProducto').value;
+  const producto = catalogosCache?.productos.find((p) => p.id === id);
+  if (!producto) return;
+
+  document.getElementById('campoModelCode').value = producto.model_code ?? '';
+  document.getElementById('campoNombre').value = producto.name ?? '';
+  document.getElementById('campoDescripcion').value = producto.description ?? '';
+  document.getElementById('campoMarca').value = producto.brand_id ?? producto.brand?.id ?? '';
+  document.getElementById('campoCategoria').value = producto.category_id ?? producto.category?.id ?? '';
+  // Proveedor y público: los del modelo son el punto de partida, pero la
+  // talla nueva puede tener otros (otro proveedor para el mismo par, o una
+  // talla de niño de un modelo que hasta ahora era solo de adulto).
+  document.getElementById('campoProveedor').value = producto.supplier_id ?? producto.supplier?.id ?? '';
+  document.getElementById('campoPublico').value = producto.audience === 'NINO' ? 'NINO' : 'ADULTO';
+
+  aplicarPublico();
+  derivarSku();
+}
+
 function actualizarVisibilidadPorModo() {
   if (articuloEnEdicion) return; // al editar, el modo no aplica: siempre se ve todo
 
   const modo = document.querySelector('input[name="modoProducto"]:checked')?.value ?? 'EXISTENTE';
   const esNuevo = modo === 'NUEVO';
   document.getElementById('campoProductoExistente').hidden = esNuevo;
-  mostrarBloqueDefinicionProducto(esNuevo);
+  mostrarBloqueDefinicionProducto(true);
+  bloquearCamposDelModelo(!esNuevo);
+
+  if (esNuevo) {
+    for (const id of CAMPOS_DEL_MODELO) {
+      const campo = document.getElementById(id);
+      if (campo.tagName === 'INPUT' || campo.tagName === 'TEXTAREA') campo.value = '';
+    }
+    document.getElementById('campoModelCode').value = siguienteCodigoDeModelo();
+    document.getElementById('campoPublico').value = 'ADULTO';
+    aplicarPublico();
+    derivarSku();
+  } else {
+    precargarDesdeProducto();
+  }
+
+  // El proveedor solo se elige (o se da de alta) cuando el modelo es nuevo:
+  // al agregarle una talla a uno que ya existe se hereda el suyo.
+  document.getElementById('ayudaProveedor').textContent = esNuevo
+    ? 'Elige uno de la lista o da de alta uno nuevo.'
+    : 'Es el del modelo: la talla se le compra a quien se le compra el modelo.';
+  actualizarProveedorNuevo();
 }
 
 document.querySelectorAll('input[name="modoProducto"]').forEach((radio) => {
@@ -97,11 +261,12 @@ async function abrirModalCrear() {
   document.getElementById('grupoModoProducto').hidden = false;
   document.querySelector('input[name="modoProducto"][value="EXISTENTE"]').checked = true;
   document.getElementById('campoAlmacenGrupo').hidden = false;
+  document.getElementById('notaRegistroInventario').hidden = false;
 
   const { marcas, categorias, proveedores, productos } = await cargarCatalogosSiHaceFalta();
   poblarSelectSimple('campoMarca', marcas, { placeholder: 'Sin marca' });
   poblarSelectSimple('campoCategoria', categorias, { placeholder: 'Sin categoría' });
-  poblarSelectSimple('campoProveedor', proveedores, { placeholder: 'Sin proveedor' });
+  poblarProveedores(proveedores);
   poblarSelectSimple('campoProducto', productos);
 
   actualizarVisibilidadPorModo();
@@ -116,13 +281,16 @@ async function abrirModalEditar(articulo) {
   document.getElementById('btnGuardarArticulo').textContent = 'Guardar cambios';
   document.getElementById('grupoModoProducto').hidden = true;
   document.getElementById('campoProductoExistente').hidden = true;
+  // Editando, la ubicación no se cambia desde acá y la nota sobraría; los
+  // umbrales sí se editan, que es "modificar el registro de inventario".
   document.getElementById('campoAlmacenGrupo').hidden = true;
+  document.getElementById('notaRegistroInventario').hidden = true;
   mostrarBloqueDefinicionProducto(true);
 
   const { marcas, categorias, proveedores } = await cargarCatalogosSiHaceFalta();
   poblarSelectSimple('campoMarca', marcas, { placeholder: 'Sin marca' });
   poblarSelectSimple('campoCategoria', categorias, { placeholder: 'Sin categoría' });
-  poblarSelectSimple('campoProveedor', proveedores, { placeholder: 'Sin proveedor' });
+  poblarProveedores(proveedores);
 
   document.getElementById('campoModelCode').value = articulo.product?.model_code ?? '';
   document.getElementById('campoModelCode').disabled = true; // el código de modelo no se reasigna desde aquí
@@ -131,6 +299,10 @@ async function abrirModalEditar(articulo) {
   document.getElementById('campoCategoria').value = articulo.product?.category?.id ?? '';
   document.getElementById('campoProveedor').value = articulo.product?.supplier?.id ?? '';
   document.getElementById('campoDescripcion').value = articulo.product?.description ?? '';
+  document.getElementById('campoPublico').value = articulo.audience === 'NINO' ? 'NINO' : 'ADULTO';
+  document.getElementById('campoProveedor').value =
+    articulo.supplier_id ?? articulo.product?.supplier_id ?? '';
+  bloquearCamposDelModelo(false);
 
   document.getElementById('campoSku').value = articulo.sku ?? '';
   document.getElementById('campoTalla').value = articulo.size_label ?? '';
@@ -138,6 +310,12 @@ async function abrirModalEditar(articulo) {
   document.getElementById('campoLargo').value = articulo.length ?? '';
   document.getElementById('campoAncho').value = articulo.width ?? '';
   document.getElementById('campoAlto').value = articulo.height ?? '';
+
+  // Después de volcar las del artículo, no antes: aplicarPublico() completa
+  // las que estén vacías con la caja estándar del público y ajusta el rango de
+  // tallas. Llamándola antes, el `?? ''` de estas cuatro líneas la deshacía.
+  aplicarPublico();
+  avisarSiElCostoSupera();
   document.getElementById('campoCosto').value = articulo.cost ?? '';
   document.getElementById('campoPrecio').value = articulo.price ?? '';
 
@@ -162,6 +340,21 @@ document.getElementById('modalArticulo').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !document.getElementById('modalArticulo').hidden) cerrarModalArticulo();
 });
+
+// El proveedor elegido, dando de alta el nuevo si hace falta. Se crea aquí y
+// no al cambiar el select para no dejar proveedores sueltos cada vez que
+// alguien escribe un nombre y se arrepiente.
+async function resolverProveedor() {
+  const elegido = document.getElementById('campoProveedor').value;
+  if (elegido !== NUEVO_PROVEEDOR) return elegido || null;
+
+  const nombre = document.getElementById('campoProveedorNuevo').value.trim();
+  if (!nombre) throw new Error('Escribe el nombre del proveedor nuevo.');
+
+  const creado = await CatalogoAPI.crearProveedor(nombre);
+  catalogosCache = null; // el proveedor nuevo tiene que salir en la próxima apertura
+  return creado.id;
+}
 
 // --- Guardar -----------------------------------------------------------
 
@@ -192,8 +385,26 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
     // CatalogoAPI.crearArticulo espera camelCase; actualizarItem hace un
     // .update() directo contra la tabla y por eso espera snake_case. Se
     // arman los dos en vez de reutilizar un mismo objeto a medias.
+    const repetida = tallaRepetida();
+    if (repetida) {
+      throw new Error(
+        `Ese modelo ya tiene la talla ${repetida.size_label} (${repetida.sku}). ` +
+        'Corrige la talla o edita el artículo que ya existe.');
+    }
+
+    const supplierId = await resolverProveedor();
+
     const paraCrearItem = { sku, sizeLabel: talla, price, cost, weight, length, width, height };
-    const paraActualizarItem = { sku, size_label: talla, price, cost, weight, length, width, height };
+    const paraActualizarItem = {
+      sku, size_label: talla, price, cost, weight, length, width, height,
+      supplier_id: supplierId,
+      audience: document.getElementById('campoPublico').value,
+    };
+    if (cost != null && price != null && cost > price) {
+      throw new Error(
+        `El costo (${cost}) no puede ser mayor que el precio (${price}): se estaría vendiendo a pérdida.`);
+    }
+
     const minStock = parseInt(document.getElementById('campoStockMinimo').value, 10) || 0;
     const maxStock = parseFloatOrNull(document.getElementById('campoStockMaximo').value);
     if (maxStock != null && maxStock < minStock) {
@@ -206,7 +417,6 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
         description: document.getElementById('campoDescripcion').value.trim() || null,
         brand_id: document.getElementById('campoMarca').value || null,
         category_id: document.getElementById('campoCategoria').value || null,
-        supplier_id: document.getElementById('campoProveedor').value || null,
       });
       await CatalogoAPI.actualizarItem(articuloEnEdicion.id, paraActualizarItem);
 
@@ -229,6 +439,7 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
           brandId: document.getElementById('campoMarca').value || null,
           categoryId: document.getElementById('campoCategoria').value || null,
           supplierId: document.getElementById('campoProveedor').value || null,
+          audience: document.getElementById('campoPublico').value,
         });
         productId = producto.id;
         catalogosCache = null; // el producto nuevo debe aparecer la próxima vez que se abra el selector
@@ -237,15 +448,17 @@ document.getElementById('formArticulo').addEventListener('submit', async (evento
         if (!productId) throw new Error('Elige un producto existente.');
       }
 
-      const item = await CatalogoAPI.crearArticulo({ productId, ...paraCrearItem });
-
-      // La cantidad arranca en 0 a propósito: el stock real entra por un
-      // movimiento ENTRADA (Fase 8), no aquí. Esto es solo el alta del
-      // catálogo y sus umbrales de alerta.
-      await InventarioAPI.crearRegistroInventario({
-        itemId: item.id,
+      // Una sola llamada: el artículo y su registro de inventario se crean en
+      // la misma transacción. Cuando eran dos, un fallo en la segunda dejaba
+      // el artículo creado y sin inventario, imposible de ver y de corregir.
+      // La cantidad arranca en 0 a propósito: el stock entra por un movimiento
+      // de ENTRADA aprobado, no por el alta del catálogo.
+      await CatalogoAPI.crearArticuloConInventario({
+        productId,
+        ...paraCrearItem,
         warehouseCode: document.getElementById('campoAlmacen').value,
-        quantity: 0,
+        supplierId,
+        audience: document.getElementById('campoPublico').value,
         minStock,
         maxStock,
       });
@@ -315,3 +528,25 @@ function mostrarToast(mensaje, tipo = 'info') {
 normalizarCodigoAlEscribir('campoSku');
 normalizarCodigoAlEscribir('campoModelCode');
 normalizarTallaAlEscribir('campoTalla');
+
+document.getElementById('campoProducto').addEventListener('change', precargarDesdeProducto);
+document.getElementById('campoPublico').addEventListener('change', () => { aplicarPublico(); derivarSku(); });
+document.getElementById('campoModelCode').addEventListener('input', derivarSku);
+document.getElementById('campoTalla').addEventListener('input', derivarSku);
+for (const id of ['campoCosto', 'campoPrecio']) {
+  document.getElementById(id).addEventListener('input', avisarSiElCostoSupera);
+}
+// "+ Nuevo proveedor…" abre el campo del nombre; cualquier otra opción lo
+// esconde y lo vacía, para que no quede un nombre a medias que luego se cree
+// sin querer.
+function actualizarProveedorNuevo() {
+  const esNuevo = document.getElementById('campoProveedor').value === NUEVO_PROVEEDOR;
+  const campo = document.getElementById('campoProveedorNuevo');
+  campo.hidden = !esNuevo;
+  campo.required = esNuevo;
+  if (!esNuevo) campo.value = '';
+  else campo.focus();
+}
+
+document.getElementById('campoProveedor').addEventListener('change', actualizarProveedorNuevo);
+

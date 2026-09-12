@@ -77,6 +77,13 @@ const MENSAJES_DE_RESTRICCION = {
   products_model_code_key:  'Ya existe un producto con ese código de modelo.',
   uq_positions_rack_code:   'Ese código de casillero ya está usado en el rack.',
   uq_items_product_size:    'Ese producto ya tiene un artículo con esa talla.',
+  ux_items_product_size_supplier: 'Ese modelo ya tiene esa talla. Corrige la talla o edita el artículo que ya existe.',
+  ux_suppliers_code:        'Ya existe un proveedor con ese código corto.',
+  suppliers_slug_key:       'Ya existe un proveedor con ese nombre.',
+  inventory_items_price_check: 'El precio tiene que ser mayor que cero.',
+  inventory_items_cost_check:  'El costo tiene que ser mayor que cero.',
+  ck_inventory_max_sobre_min:  'El stock máximo no puede quedar por debajo del mínimo.',
+  ck_products_audience:        'El público del modelo tiene que ser adulto o niño.',
 };
 
 function traducirError(err, respaldo = 'No se pudo completar la acción.') {

@@ -142,11 +142,11 @@ function filaArticulo(art) {
   const nombre = art.product?.name ?? '—';
   const talla = art.size_label ? ` · Talla ${art.size_label}` : '';
   const categoria = art.product?.category?.name ?? '—';
-  const proveedor = art.product?.supplier?.name ?? '—';
+  const proveedor = proveedorDe(art) ?? '—';
   const costo = art.cost != null ? formatoMoneda.format(art.cost) : '—';
   const precio = art.price != null ? formatoMoneda.format(art.price) : '—';
 
-  const esInfantil = art.product?.audience === 'NINO';
+  const esInfantil = publicoDe(art) === 'NINO';
   const insigniaPublico = esInfantil ? '<span class="pill nino">Niño</span>' : '';
 
   const tr = document.createElement('tr');
@@ -284,6 +284,17 @@ function renderMovimientos(movimientos) {
 // por cada tecleo, y así el buscador responde al instante.
 let todosLosArticulos = [];
 
+// El proveedor y el público son de cada talla desde la migración 27. Se cae al
+// del modelo para las filas que todavía no lo tengan cargado: la columna es
+// nueva y una fila vieja no debería quedar sin proveedor en la tabla.
+function proveedorDe(art) {
+  return art.supplier?.name ?? art.product?.supplier?.name ?? null;
+}
+
+function publicoDe(art) {
+  return art.audience ?? art.product?.audience ?? null;
+}
+
 function normalizar(texto) {
   return (texto ?? '')
     .toString()
@@ -327,8 +338,8 @@ function aplicarFiltros() {
       if (!coincideTexto) return false;
     }
     if (categoria && art.product?.category?.name !== categoria) return false;
-    if (proveedor && art.product?.supplier?.name !== proveedor) return false;
-    if (publico && art.product?.audience !== publico) return false;
+    if (proveedor && proveedorDe(art) !== proveedor) return false;
+    if (publico && publicoDe(art) !== publico) return false;
     if (estadoBuscado) {
       const { filaPrincipal } = stockDelArticulo(art);
       if (calcularEstadoStock(filaPrincipal) !== estadoBuscado) return false;
@@ -345,7 +356,7 @@ function inicializarFiltros(articulos) {
   todosLosArticulos = articulos;
 
   poblarSelectDesdeArticulos('filtroCategoria', (a) => a.product?.category?.name);
-  poblarSelectDesdeArticulos('filtroProveedor', (a) => a.product?.supplier?.name);
+  poblarSelectDesdeArticulos('filtroProveedor', proveedorDe);
 
   aplicarFiltros();
 }

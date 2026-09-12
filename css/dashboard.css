@@ -1141,6 +1141,13 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
   color: var(--muted);
 }
 
+/* El mismo texto de ayuda, cuando lo que dice es un problema: repetir una
+   talla que el modelo ya tiene. */
+.campo-ayuda-error {
+  color: var(--rojo, #b42318);
+  font-weight: 500;
+}
+
 /* Varias líneas "ubicación + Liberar": un artículo repartido en casilleros, o
    las tallas de un mismo casillero. */
 .lista-ubicacion-actual {
@@ -1362,3 +1369,5 @@ tbody tr[data-estado="SOBRE_MAXIMO"] { border-left-color: var(--accent); }
   .exis-modelo { grid-template-columns: 1fr auto; }
   .exis-tallas { grid-column: 1 / -1; }
 }
+
+.campo-opcional { font-weight: 400; color: var(--muted); font-size: 11.5px; }
